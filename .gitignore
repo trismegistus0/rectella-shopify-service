@@ -1,0 +1,28 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/rectella-shopify-service
+
+# Test
+*.test
+*.out
+coverage.html
+
+# Environment
+.env
+
+# Docker volume data
+pgdata/
+
+# Test run history
+scripts/run-history/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

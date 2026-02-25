@@ -1,0 +1,54 @@
+{
+  "id": 5551234567890,
+  "name": "#BBQ1001",
+  "email": "john.smith@example.com",
+  "created_at": "2026-02-24T14:30:00Z",
+  "total_price": "748.00",
+  "currency": "GBP",
+  "gateway": "shopify_payments",
+  "payment_gateway_names": ["shopify_payments"],
+  "financial_status": "paid",
+  "shipping_address": {
+    "first_name": "John",
+    "last_name": "Smith",
+    "address1": "42 Bancroft Road",
+    "address2": "Unit 3",
+    "city": "Burnley",
+    "province": "Lancashire",
+    "zip": "BB10 2TP",
+    "country": "United Kingdom",
+    "phone": "+441282478200"
+  },
+  "line_items": [
+    {
+      "id": 11001,
+      "title": "21\" Kamado Egg Charcoal BBQ Grill",
+      "sku": "CBBQ0001",
+      "quantity": 1,
+      "price": "599.00",
+      "total_discount": "0.00",
+      "tax_lines": [
+        {
+          "price": "119.80",
+          "rate": 0.2,
+          "title": "VAT"
+        }
+      ]
+    },
+    {
+      "id": 11002,
+      "title": "57cm Heavy-Gauge Charcoal BBQ Grill with 36cm Pizza Stone",
+      "sku": "MBBQ0159",
+      "quantity": 1,
+      "price": "149.00",
+      "total_discount": "0.00",
+      "tax_lines": [
+        {
+          "price": "29.80",
+          "rate": 0.2,
+          "title": "VAT"
+        }
+      ]
+    }
+  ]
+}
