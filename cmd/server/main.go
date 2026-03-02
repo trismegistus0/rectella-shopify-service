@@ -13,6 +13,7 @@ import (
 
 	"codeberg.org/speeder091/rectella-shopify-service/config"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
+	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/webhook"
 )
 
@@ -72,6 +73,15 @@ func run() error {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	})
+
+	// Instantiate SYSPRO e.net client (used by the batch processor in phase 2).
+	_ = syspro.NewEnetClient(
+		cfg.SysproEnetURL,
+		cfg.SysproOperator,
+		cfg.SysproPassword,
+		cfg.SysproCompanyID,
+		logger,
+	)
 
 	// Register webhook handlers.
 	wh := webhook.NewHandler(db, cfg.ShopifyWebhookSecret, logger)

@@ -12,7 +12,7 @@ Rectella (Burnley, Lancashire) manufactures BBQ/grilling products under the **Ba
 
 ### Data Flows (Phase 1)
 
-1. **Orders IN** (Shopify → Service → SYSPRO): Webhook-driven, staged in PostgreSQL, batch-submitted via `SORTBO`
+1. **Orders IN** (Shopify → Service → SYSPRO): Webhook-driven, staged in PostgreSQL, batch-submitted via `SORTOI`
 2. **Stock sync OUT** (SYSPRO → Service → Shopify): Scheduled cron sync from single warehouse
 3. **Shipment status BACK** (SYSPRO → Service → Shopify): Fulfilment status updates
 
@@ -52,6 +52,11 @@ internal/
     order.go                        # WebhookExists, CreateOrder (transactional)
     migrations/
       001_initial_schema.up.sql     # webhook_events, orders, order_lines tables
+  syspro/
+    client.go                       # Client interface + enetClient (logon/transaction/logoff)
+    xml.go                          # SORTOI XML builder (sortoiParams, sortoiDocument)
+    client_test.go                  # httptest-based client tests
+    xml_test.go                     # XML builder unit tests
   webhook/
     handler.go                      # POST /webhooks/orders/create — OrderStore interface
     payload.go                      # Unexported Shopify JSON DTOs
@@ -78,12 +83,13 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
 - **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
 - **Health endpoints**: `GET /health` (DB ping), `GET /ready`
-- **Tests**: 16 unit tests (webhook handler + HMAC), integration test script
+- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `enetClient` (logon/transaction/logoff), SORTOI XML builder (`sortoiParams`, `sortoiDocument`); 13 tests
+- **Tests**: 29 unit tests (webhook handler + HMAC + SYSPRO client + XML builder), integration test script
 
 ### Not Yet Built
 
 - Batch processor (queue → SYSPRO submission)
-- SYSPRO e.net client (SORTBO sales order)
+- SYSPRO e.net client wired to batch processor (SORTOI — built, not yet called)
 - Stock sync (SYSPRO SQL → Shopify inventory API)
 - Shipment/fulfilment feedback
 - Order cancellation handler
@@ -100,10 +106,11 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 
 - **Stage-then-process**: Never call SYSPRO from a webhook handler. Persist first, process async.
 - **Single customer**: All orders → `WEBS01`. No multi-customer logic.
-- **Batch processing**: Orders submitted to SYSPRO on a schedule, not per-webhook.
+- **Batch processing**: Orders submitted to SYSPRO on a schedule, not per-webhook. Business object is **SORTOI** (sales order transaction import).
 - **HMAC verification**: All webhooks verified via HMAC-SHA256. Reject unverified.
 - **Idempotency**: Deduplicate on `X-Shopify-Webhook-Id`.
 - **Graceful shutdown**: Drain in-flight requests before stopping.
+- **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules. Keep it accurate enough to onboard a new developer.
 
 ## Data Mapping — Shopify to SYSPRO
 
@@ -118,7 +125,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 | `line_items[].price` | Unit Price | String → float64 |
 | `line_items[].tax_lines[].price` | Tax Amount | Summed per line |
 
-**Fixed values**: Customer `WEBS01`, Business Object `SORTBO`, Company ID from env.
+**Fixed values**: Customer `WEBS01`, Business Object `SORTOI`, Company ID from env.
 
 ## Environment Variables
 
@@ -175,9 +182,10 @@ LOG_LEVEL                 # debug/info/warn/error
 ## MCP Servers
 
 ```bash
+# Project-scoped (stored in ~/.claude.json):
 claude mcp add shopify-dev -- npx -y @shopify/dev-mcp@latest
-claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
-claude mcp add fetch -- npx -y @anthropic/mcp-server-fetch
-claude mcp add rest-api -- npx -y @dkmaker/mcp-rest-api
-# Optional: claude mcp add gopls -- mcp-gopls --workspace ~/Work/ctrlaltinsight/rectella-shopify-service
+
+# Installed as official plugins (stored in ~/.claude/settings.json):
+# context7@claude-plugins-official  — docs lookup (use mcp__plugin_context7_context7__* tools)
+# gopls-lsp@claude-plugins-official — Go LSP
 ```
