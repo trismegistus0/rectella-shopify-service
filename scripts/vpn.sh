@@ -16,6 +16,61 @@ PID_FILE="/tmp/rectella-vpn.pid"
 # Known Rectella internal IP for health checks (your VPN-assigned address).
 HEALTH_IP="172.18.251.117"
 
+# Managed /etc/hosts entries for Rectella hostnames.
+# Mullvad DNS leak prevention blocks port 53 from systemd-resolved to
+# Rectella's DNS servers, so we fall back to /etc/hosts.
+HOSTS_MARKER="rectella-vpn"
+RECTELLA_HOSTS=(
+  "192.168.3.150  RIL-APP01 RIL-APP01.rectella.com"
+  "192.168.3.151  RIL-DB01 RIL-DB01.rectella.com"
+)
+
+fix_dns() {
+  # vpnc-script sets domains as search-only (no ~ prefix).
+  # systemd-resolved then sends queries to the default route (Mullvad's ~.)
+  # instead of tun0's DNS servers. Fix by adding ~ prefix to make them
+  # routing domains, which take priority over Mullvad for matching queries.
+  local domains
+  domains=$(resolvectl domain tun0 2>/dev/null | sed 's/^.*: //') || return 0
+  if [[ -z "$domains" ]]; then
+    return 0
+  fi
+
+  local routing_domains=""
+  for d in $domains; do
+    if [[ $d == ~* ]]; then
+      routing_domains="$routing_domains $d"
+    else
+      routing_domains="$routing_domains ~$d"
+    fi
+  done
+
+  sudo resolvectl domain tun0 $routing_domains
+  sudo resolvectl default-route tun0 false
+  echo "DNS routing fixed (domains:$routing_domains)"
+}
+
+clean_hosts() {
+  if grep -q "BEGIN $HOSTS_MARKER" /etc/hosts 2>/dev/null; then
+    sudo sed -i "/# BEGIN $HOSTS_MARKER/,/# END $HOSTS_MARKER/d" /etc/hosts
+  fi
+}
+
+fix_hosts() {
+  clean_hosts
+
+  local block="# BEGIN $HOSTS_MARKER"
+  for entry in "${RECTELLA_HOSTS[@]}"; do
+    block="$block
+$entry"
+  done
+  block="$block
+# END $HOSTS_MARKER"
+
+  echo "$block" | sudo tee -a /etc/hosts >/dev/null
+  echo "/etc/hosts updated (RIL-APP01, RIL-DB01)"
+}
+
 vpn_up() {
   if [[ -f "$PID_FILE" ]] && sudo kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     echo "VPN already running (PID $(cat "$PID_FILE"))"
@@ -61,6 +116,9 @@ vpn_up() {
     exit 1
   fi
 
+  fix_dns
+  fix_hosts
+
   echo ""
   vpn_test
 }
@@ -81,6 +139,7 @@ vpn_down() {
     sleep 1
   done
 
+  clean_hosts
   echo "VPN disconnected."
 }
 
@@ -154,16 +213,28 @@ vpn_test() {
     fail=$((fail + 1))
   fi
 
+  # 6. DNS resolves RIL-APP01 via Rectella DNS servers
+  if resolvectl query RIL-APP01 &>/dev/null; then
+    local resolved_ip
+    resolved_ip=$(resolvectl query RIL-APP01 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+    echo "  PASS  DNS resolves RIL-APP01 ($resolved_ip)"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL  DNS cannot resolve RIL-APP01"
+    fail=$((fail + 1))
+  fi
+
   echo ""
   echo "Results: $pass passed, $fail failed"
   (( fail == 0 )) && return 0 || return 1
 }
 
 case "${1:-}" in
-  up)     vpn_up ;;
-  down)   vpn_down ;;
-  status) vpn_status ;;
-  test)   vpn_test ;;
+  up)        vpn_up ;;
+  down)      vpn_down ;;
+  status)    vpn_status ;;
+  test)      vpn_test ;;
+  fix-hosts) fix_hosts ;;
   *)
     echo "Usage: ./scripts/vpn.sh up|down|status|test"
     exit 1
