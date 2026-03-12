@@ -26,3 +26,6 @@ scripts/run-history/
 *.swp
 *.swo
 *~
+
+# Local network reference (contains internal IPs, not for repo)
+docs/network-setup.md
