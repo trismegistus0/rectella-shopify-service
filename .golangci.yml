@@ -1,0 +1,30 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - gosec
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+    gosec:
+      excludes:
+        - G101  # false positive on test constants
+        - G104  # covered by errcheck (avoid duplicate)
+issues:
+  exclude-dirs:
+    - docs
+    - scripts
+  exclude-rules:
+    # defer close in tests — best-effort cleanup
+    - path: _test\.go
+      linters: [errcheck]
+      source: "defer .+\\.Close\\("

@@ -253,7 +253,7 @@ func TestParseSORTOIResponse_InvalidXML(t *testing.T) {
 
 // TestNewEnetClient_Interface verifies the constructor satisfies the Client interface.
 func TestNewEnetClient_Interface(t *testing.T) {
-	var _ Client = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
+	_ = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
 	// Compile-time check is sufficient; this test documents the guarantee.
 	_ = fmt.Sprintf("%T", NewEnetClient)
 }

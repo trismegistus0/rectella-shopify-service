@@ -89,7 +89,7 @@ func (p *Processor) processBatch(ctx context.Context) error {
 		p.logger.Error("opening SYSPRO session", "error", err)
 		return nil
 	}
-	defer session.Close(ctx)
+	defer session.Close(ctx) //nolint:errcheck // best-effort cleanup
 
 	for _, ow := range orders {
 		if err := p.submitOrder(ctx, session, ow); err != nil {

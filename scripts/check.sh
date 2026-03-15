@@ -25,6 +25,26 @@ else
 fi
 
 echo ""
+echo "=== golangci-lint ==="
+if command -v golangci-lint &>/dev/null; then
+  golangci-lint run ./... || failed=1
+elif [ -x ~/go/bin/golangci-lint ]; then
+  ~/go/bin/golangci-lint run ./... || failed=1
+else
+  echo "SKIP (not installed — go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)"
+fi
+
+echo ""
+echo "=== govulncheck ==="
+if command -v govulncheck &>/dev/null; then
+  govulncheck ./... || failed=1
+elif [ -x ~/go/bin/govulncheck ]; then
+  ~/go/bin/govulncheck ./... || failed=1
+else
+  echo "SKIP (not installed — go install golang.org/x/vuln/cmd/govulncheck@latest)"
+fi
+
+echo ""
 echo "=== go test ==="
 go test ./... -count=1 || failed=1
 

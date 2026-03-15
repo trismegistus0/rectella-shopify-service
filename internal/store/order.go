@@ -33,7 +33,7 @@ func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order m
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
 	// Insert webhook event.
 	_, err = tx.Exec(ctx,
@@ -90,11 +90,13 @@ func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order m
 		br := tx.SendBatch(ctx, batch)
 		for range lines {
 			if _, err := br.Exec(); err != nil {
-				br.Close()
+				_ = br.Close()
 				return fmt.Errorf("inserting order line: %w", err)
 			}
 		}
-		br.Close()
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("closing batch insert: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

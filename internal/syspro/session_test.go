@@ -13,7 +13,7 @@ func TestOpenSession_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer session.Close(context.Background())
+	defer session.Close(context.Background()) //nolint:errcheck
 
 	if fake.logonCalls != 1 {
 		t.Errorf("expected 1 logon call, got %d", fake.logonCalls)
@@ -39,7 +39,7 @@ func TestSession_SubmitOrder_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer session.Close(context.Background())
+	defer session.Close(context.Background()) //nolint:errcheck
 
 	result, err := session.SubmitOrder(context.Background(), testOrder(), testLines())
 	if err != nil {
@@ -61,7 +61,7 @@ func TestSession_MultipleSubmits_ReuseSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer session.Close(context.Background())
+	defer session.Close(context.Background()) //nolint:errcheck
 
 	for i := 0; i < 3; i++ {
 		_, err := session.SubmitOrder(context.Background(), testOrder(), testLines())
