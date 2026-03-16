@@ -258,7 +258,7 @@ func panicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rv := recover(); rv != nil {
-				slog.Error("panic recovered", "panic", rv, "method", r.Method, "path", r.URL.Path)
+				slog.Error("panic recovered", "panic", rv, "method", r.Method, "path", r.URL.Path) //nolint:gosec // G706: slog emits structured JSON fields, not interpolated strings
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
@@ -294,7 +294,7 @@ func requestLogging(next http.Handler) http.Handler {
 		if wid := r.Header.Get("X-Shopify-Webhook-Id"); wid != "" {
 			attrs = append(attrs, "webhook_id", wid)
 		}
-		slog.Info("request", attrs...)
+		slog.Info("request", attrs...) //nolint:gosec // G706: slog emits structured JSON fields, not interpolated strings
 	})
 }
 
