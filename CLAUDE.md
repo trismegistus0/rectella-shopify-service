@@ -1,14 +1,14 @@
 # CLAUDE.md
 
-## Session Start Protocol
+## Working Style
 
-At the start of every session, before any work begins:
+Sebastian is building this service and learning Go, testing patterns, and production engineering as he goes. The role here is **mentor first, tool second**:
 
-1. **Check tooling**: Verify MCP servers are connected, plugins are loaded, skills are available. Report any gaps.
-2. **Check skills**: Review available superpowers skills — use brainstorming before creative work, TDD before implementation, debugging before fixing, writing-plans before multi-step tasks.
-3. **Check approach**: Use modern, up-to-date best practice for the current date. If a better tool, technique, or Claude Code feature exists, use it. If unsure, research first.
-4. **Guide the developer**: Sebastian is learning Claude Code techniques alongside building software. Explain *why* you're using a particular approach, not just *what*. Surface better ways of doing things proactively.
-5. **Quality over speed, but both**: Write production-grade code from the start. Use code review after implementation. Catch issues early, not in production.
+- **Teach the why, not just the what.** When choosing an approach, explain the reasoning. When a Go idiom or testing pattern applies, name it and show how it connects to the bigger picture.
+- **Be direct and concise.** Lead with the answer or the action. Don't pad with preamble or restate what Sebastian just said. If it fits in one sentence, use one sentence.
+- **Surface better ways proactively.** If there's a cleaner pattern, a better tool, or a modern best practice — say so. Don't wait to be asked.
+- **Quality from the start.** Write production-grade code. Use code review after implementation. Catch issues early, not in production.
+- **Guide the next step.** After completing work, suggest what Sebastian should look at, try, or learn next. Don't just stop — point the way forward.
 
 ## Project Overview
 
@@ -100,6 +100,7 @@ scripts/
   probe-enet.sh                     # e.net port discovery (candidate port probing)
   run-history/                      # Timestamped test run logs (gitignored)
 docs/                               # Reference docs: emails, SOW, SYSPRO training (not code)
+Dockerfile                          # Multi-stage Go build (non-root, Alpine)
 docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 .env                                # Local config (gitignored)
 .env.example                        # Template
@@ -110,11 +111,15 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Webhook handler**: Receives `orders/create` webhooks, verifies HMAC-SHA256, deduplicates via `X-Shopify-Webhook-Id`, validates, maps to domain types, persists in single transaction
 - **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
 - **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
-- **Health endpoints**: `GET /health` (DB ping), `GET /ready`
+- **Health endpoints**: `GET /health` (DB ping, no error leak), `GET /ready`
 - **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `enetClient` (logon/transaction/logoff), SORTOI XML builder; 13 tests
 - **VPN tooling** (`scripts/`): `vpn.sh` (connect/disconnect/test with Mullvad coexistence), `vpn-monitor.sh` (self-healing health monitor), DNS routing fix, managed `/etc/hosts` entries for RIL-APP01/RIL-DB01
-- **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches.
-- **GET /orders?status=** endpoint: Operations visibility into order statuses
+- **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
+- **Duplicate prevention**: Atomic `pending → processing` status transition before SYSPRO call + `syspro_order_number` stored on success for reconciliation
+- **GET /orders?status=** endpoint: Operations visibility into order statuses (admin-token protected)
+- **POST /orders/{id}/retry** endpoint: Re-queue failed/dead-lettered orders (admin-token protected)
+- **Middleware**: Panic recovery, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`), request logging (method, path, status, duration, webhook_id)
+- **Dockerfile**: Multi-stage Go build, non-root user, Alpine-based
 - **Tests**: 43 unit tests (webhook handler + HMAC + SYSPRO client + XML builder + session + batch processor) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
 
 ### Not Yet Built
@@ -171,6 +176,8 @@ SYSPRO_OPERATOR           # SYSPRO operator
 SYSPRO_PASSWORD           # SYSPRO password
 SYSPRO_COMPANY_ID         # SYSPRO company ID
 DATABASE_URL              # PostgreSQL connection string
+PORT                      # HTTP listen port (default 8080)
+ADMIN_TOKEN               # Shared secret for /orders and /orders/{id}/retry (optional, open if unset)
 STOCK_SYNC_INTERVAL       # Default 15m
 BATCH_INTERVAL            # Default 5m
 LOG_LEVEL                 # debug/info/warn/error

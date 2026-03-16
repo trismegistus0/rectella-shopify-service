@@ -25,6 +25,14 @@ func Migrate(ctx context.Context, db *DB) error {
 		return fmt.Errorf("creating schema_migrations table: %w", err)
 	}
 
+	// Acquire an advisory lock to prevent concurrent migration runs
+	// (e.g. two instances starting simultaneously in Azure Container Apps).
+	_, err = db.Pool.Exec(ctx, `SELECT pg_advisory_lock(1)`)
+	if err != nil {
+		return fmt.Errorf("acquiring migration lock: %w", err)
+	}
+	defer db.Pool.Exec(ctx, `SELECT pg_advisory_unlock(1)`) //nolint:errcheck // best-effort unlock
+
 	// Find the current version.
 	var current int
 	err = db.Pool.QueryRow(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current)

@@ -106,6 +106,53 @@ func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order m
 	return nil
 }
 
+// MarkOrderProcessing atomically transitions an order from 'pending' to 'processing'.
+// Returns false if the order is no longer pending (already picked up by another batch).
+func (db *DB) MarkOrderProcessing(ctx context.Context, orderID int64) (bool, error) {
+	tag, err := db.Pool.Exec(ctx,
+		`UPDATE orders SET status = 'processing', updated_at = NOW()
+		WHERE id = $1 AND status = 'pending'`,
+		orderID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("marking order %d processing: %w", orderID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UpdateOrderSubmitted records a successful SYSPRO submission with the order number.
+func (db *DB) UpdateOrderSubmitted(ctx context.Context, orderID int64, sysproOrderNumber string, attempts int) error {
+	tag, err := db.Pool.Exec(ctx,
+		`UPDATE orders
+		SET status = $2, syspro_order_number = $3, attempts = $4, last_error = '', updated_at = NOW()
+		WHERE id = $1`,
+		orderID, string(model.OrderStatusSubmitted), sysproOrderNumber, attempts,
+	)
+	if err != nil {
+		return fmt.Errorf("updating order %d submitted: %w", orderID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("order %d not found", orderID)
+	}
+	return nil
+}
+
+// RetryOrder moves a failed or dead-lettered order back to pending, resetting attempts.
+func (db *DB) RetryOrder(ctx context.Context, orderID int64) error {
+	tag, err := db.Pool.Exec(ctx,
+		`UPDATE orders SET status = 'pending', attempts = 0, last_error = '', updated_at = NOW()
+		WHERE id = $1 AND status IN ('failed', 'dead_letter')`,
+		orderID,
+	)
+	if err != nil {
+		return fmt.Errorf("retrying order %d: %w", orderID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("order %d not found or not in retryable status", orderID)
+	}
+	return nil
+}
+
 // FetchPendingOrders returns up to limit orders with status 'pending', oldest first,
 // along with their line items.
 func (db *DB) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderWithLines, error) {
@@ -115,7 +162,7 @@ func (db *DB) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderW
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
 			payment_reference, payment_amount,
-			raw_payload, attempts, last_error,
+			raw_payload, syspro_order_number, attempts, last_error,
 			order_date, created_at, updated_at
 		FROM orders
 		WHERE status = 'pending'
@@ -136,7 +183,7 @@ func (db *DB) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderW
 			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
 			&o.ShipPhone, &o.ShipEmail,
 			&o.PaymentReference, &o.PaymentAmount,
-			&o.RawPayload, &o.Attempts, &o.LastError,
+			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
 			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning order row: %w", err)
@@ -207,7 +254,7 @@ func (db *DB) ListOrdersByStatus(ctx context.Context, status model.OrderStatus) 
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
 			payment_reference, payment_amount,
-			raw_payload, attempts, last_error,
+			raw_payload, syspro_order_number, attempts, last_error,
 			order_date, created_at, updated_at
 		FROM orders
 		WHERE status = $1
@@ -227,7 +274,7 @@ func (db *DB) ListOrdersByStatus(ctx context.Context, status model.OrderStatus) 
 			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
 			&o.ShipPhone, &o.ShipEmail,
 			&o.PaymentReference, &o.PaymentAmount,
-			&o.RawPayload, &o.Attempts, &o.LastError,
+			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
 			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning order: %w", err)

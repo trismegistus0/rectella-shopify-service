@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -95,6 +96,22 @@ func (h *Handler) handleOrderCreate(w http.ResponseWriter, r *http.Request) {
 	if len(payload.LineItems) == 0 {
 		h.respond(w, http.StatusUnprocessableEntity, "error", "no line items")
 		return
+	}
+
+	// Validate line items.
+	for i, li := range payload.LineItems {
+		if li.SKU == "" {
+			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: missing SKU", i+1))
+			return
+		}
+		if li.Quantity <= 0 {
+			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: invalid quantity", i+1))
+			return
+		}
+		if price, err := strconv.ParseFloat(li.Price, 64); err == nil && price < 0 {
+			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: negative price", i+1))
+			return
+		}
 	}
 
 	// Map to domain types.
