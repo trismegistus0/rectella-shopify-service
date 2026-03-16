@@ -15,10 +15,12 @@ import (
 
 // mockStore implements Store for testing.
 type mockStore struct {
-	orders    []model.OrderWithLines
-	fetchErr  error
-	updates   []statusUpdate
-	updateErr error
+	orders     []model.OrderWithLines
+	fetchErr   error
+	updates    []statusUpdate
+	submitted  []submittedUpdate
+	updateErr  error
+	markingErr error
 }
 
 type statusUpdate struct {
@@ -26,6 +28,12 @@ type statusUpdate struct {
 	Status    model.OrderStatus
 	Attempts  int
 	LastError string
+}
+
+type submittedUpdate struct {
+	OrderID           int64
+	SysproOrderNumber string
+	Attempts          int
 }
 
 func (m *mockStore) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderWithLines, error) {
@@ -38,11 +46,26 @@ func (m *mockStore) FetchPendingOrders(ctx context.Context, limit int) ([]model.
 	return m.orders, nil
 }
 
+func (m *mockStore) MarkOrderProcessing(ctx context.Context, orderID int64) (bool, error) {
+	if m.markingErr != nil {
+		return false, m.markingErr
+	}
+	return true, nil
+}
+
 func (m *mockStore) UpdateOrderStatus(ctx context.Context, orderID int64, status model.OrderStatus, attempts int, lastError string) error {
 	if m.updateErr != nil {
 		return m.updateErr
 	}
 	m.updates = append(m.updates, statusUpdate{orderID, status, attempts, lastError})
+	return nil
+}
+
+func (m *mockStore) UpdateOrderSubmitted(ctx context.Context, orderID int64, sysproOrderNumber string, attempts int) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	m.submitted = append(m.submitted, submittedUpdate{orderID, sysproOrderNumber, attempts})
 	return nil
 }
 
@@ -167,11 +190,11 @@ func TestProcessBatch_SingleOrderSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(ms.updates) != 1 {
-		t.Fatalf("expected 1 update, got %d", len(ms.updates))
+	if len(ms.submitted) != 1 {
+		t.Fatalf("expected 1 submitted update, got %d", len(ms.submitted))
 	}
-	if ms.updates[0].Status != model.OrderStatusSubmitted {
-		t.Errorf("expected submitted, got %s", ms.updates[0].Status)
+	if ms.submitted[0].SysproOrderNumber != "SO12345" {
+		t.Errorf("expected syspro order SO12345, got %s", ms.submitted[0].SysproOrderNumber)
 	}
 	if !session.closed {
 		t.Error("expected session to be closed")
@@ -201,17 +224,15 @@ func TestProcessBatch_BusinessError_ContinuesBatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(ms.updates) != 3 {
-		t.Fatalf("expected 3 updates, got %d", len(ms.updates))
+	// 2 submitted + 1 failed
+	if len(ms.submitted) != 2 {
+		t.Fatalf("expected 2 submitted updates, got %d", len(ms.submitted))
 	}
-	if ms.updates[0].Status != model.OrderStatusSubmitted {
-		t.Errorf("order 1: expected submitted, got %s", ms.updates[0].Status)
+	if len(ms.updates) != 1 {
+		t.Fatalf("expected 1 status update (failed), got %d", len(ms.updates))
 	}
-	if ms.updates[1].Status != model.OrderStatusFailed {
-		t.Errorf("order 2: expected failed, got %s", ms.updates[1].Status)
-	}
-	if ms.updates[2].Status != model.OrderStatusSubmitted {
-		t.Errorf("order 3: expected submitted, got %s", ms.updates[2].Status)
+	if ms.updates[0].Status != model.OrderStatusFailed {
+		t.Errorf("order 2: expected failed, got %s", ms.updates[0].Status)
 	}
 }
 
@@ -238,17 +259,17 @@ func TestProcessBatch_InfraError_StopsBatch(t *testing.T) {
 	}
 
 	// Order 1: submitted, Order 2: stays pending (attempts incremented), Order 3: untouched
-	if len(ms.updates) != 2 {
-		t.Fatalf("expected 2 updates (order 1 submitted + order 2 attempt bump), got %d", len(ms.updates))
+	if len(ms.submitted) != 1 {
+		t.Fatalf("expected 1 submitted update, got %d", len(ms.submitted))
 	}
-	if ms.updates[0].Status != model.OrderStatusSubmitted {
-		t.Errorf("order 1: expected submitted, got %s", ms.updates[0].Status)
+	if len(ms.updates) != 1 {
+		t.Fatalf("expected 1 status update (infra error), got %d", len(ms.updates))
 	}
-	if ms.updates[1].Status != model.OrderStatusPending {
-		t.Errorf("order 2: expected pending (retry), got %s", ms.updates[1].Status)
+	if ms.updates[0].Status != model.OrderStatusPending {
+		t.Errorf("order 2: expected pending (retry), got %s", ms.updates[0].Status)
 	}
-	if ms.updates[1].Attempts != 1 {
-		t.Errorf("order 2: expected attempts=1, got %d", ms.updates[1].Attempts)
+	if ms.updates[0].Attempts != 1 {
+		t.Errorf("order 2: expected attempts=1, got %d", ms.updates[0].Attempts)
 	}
 }
 

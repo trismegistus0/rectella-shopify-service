@@ -39,6 +39,9 @@ type Order struct {
 	// Raw webhook payload
 	RawPayload []byte
 
+	// SYSPRO reference
+	SysproOrderNumber string
+
 	// Queue management
 	Attempts  int
 	LastError string

@@ -1,0 +1,1 @@
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS syspro_order_number TEXT NOT NULL DEFAULT '';

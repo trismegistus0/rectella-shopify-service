@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
 )
@@ -61,7 +62,7 @@ func NewEnetClient(baseURL, operator, password, companyID string, logger *slog.L
 		password:   password,
 		companyID:  companyID,
 		logger:     logger,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
