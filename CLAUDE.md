@@ -112,7 +112,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
 - **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
 - **Health endpoints**: `GET /health` (DB ping, no error leak), `GET /ready`
-- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `enetClient` (logon/transaction/logoff), SORTOI XML builder; 13 tests
+- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `enetClient` (GET-based logon/transaction/logoff on port 31002), SORTOI XML builder with net price calculation, Windows-1252 response handling; verified end-to-end against SYSPRO test company `RILT`
 - **VPN tooling** (`scripts/`): `vpn.sh` (connect/disconnect/test with Mullvad coexistence), `vpn-monitor.sh` (self-healing health monitor), DNS routing fix, managed `/etc/hosts` entries for RIL-APP01/RIL-DB01
 - **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
 - **Duplicate prevention**: Atomic `pending → processing` status transition before SYSPRO call + `syspro_order_number` stored on success for reconciliation
@@ -120,12 +120,13 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **POST /orders/{id}/retry** endpoint: Re-queue failed/dead-lettered orders (admin-token protected)
 - **Middleware**: Panic recovery, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`), request logging (method, path, status, duration, webhook_id)
 - **Dockerfile**: Multi-stage Go build, non-root user, Alpine-based
-- **Tests**: 43 unit tests (webhook handler + HMAC + SYSPRO client + XML builder + session + batch processor) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
+- **Tests**: 46 unit tests (webhook handler + HMAC + SYSPRO client + XML builder + session + batch processor) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
+- **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation
 
 ### Not Yet Built
 
 - Gift card handling (non-stocked lines in SORTOI — pending Liz Buckley finance approval)
-- Stock sync (SYSPRO e.net Query → Shopify inventory API)
+- Stock sync (SYSPRO INVQRY → Shopify GraphQL `inventorySetQuantities`) — designed, not yet coded
 - Shipment/fulfilment feedback
 - Order cancellation handler
 
@@ -134,7 +135,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Go 1.26.0** (mise, `~/Work/.mise.toml`)
 - **PostgreSQL 16** (Docker, network_mode: host)
 - **pgx/v5** — only external dependency
-- **SYSPRO 8**: e.net NetTcp:31001 (read/write) + REST:40000 (read) on `RIL-APP01`
+- **SYSPRO 8**: e.net REST on port 31002 (`http://192.168.3.150:31002/SYSPROWCFService/Rest`), GET-based API, company `RILT` (test)
 - **Shopify**: Admin API + webhooks
 
 ## Key Design Rules
@@ -148,6 +149,8 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Deduplicate on `X-Shopify-Webhook-Id`.
 - **Graceful shutdown**: Drain in-flight requests before stopping.
 - **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules. Keep it accurate enough to onboard a new developer.
+- **Stock sync design**: SYSPRO `INVQRY` (one call per SKU, `QtyAvailable` field) → Shopify GraphQL `inventorySetQuantities` (batch all SKUs in one mutation). Polls every 15m. Order-aware: subtracts pending/processing order quantities from SYSPRO values before pushing. Triggered sync on webhook receipt for near-instant updates. Never zeros Shopify on SYSPRO failure. Clamps negatives to 0. Single-flight guard.
+- **Pricing**: Shopify owns all deals/discounts. Net prices sent to SYSPRO via `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`.
 
 ## Data Mapping — Shopify to SYSPRO
 
