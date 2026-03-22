@@ -35,13 +35,14 @@ type SalesOrderResult struct {
 	ErrorMessage      string
 }
 
-// sortoiResponse is used to parse the XML returned by a successful SORTOI transaction.
-// SYSPRO wraps the result in a <SalesOrders><Orders><OrderHeader>...</OrderHeader></Orders></SalesOrders> envelope.
+// sortoiResponse is used to parse the XML returned by a SORTOI transaction.
 type sortoiResponse struct {
-	XMLName     xml.Name `xml:"SalesOrders"`
-	OrderNumber string   `xml:"Orders>OrderHeader>SalesOrder"`
-	ReturnCode  string   `xml:"ReturnCode"`
-	Message     string   `xml:"Message"`
+	XMLName          xml.Name `xml:"SalesOrders"`
+	OrderNumber      string   `xml:"Orders>OrderHeader>SalesOrder"`
+	CustomerPoNumber string   `xml:"Orders>OrderHeader>CustomerPoNumber"`
+	ValidationStatus string   `xml:"ValidationStatus>Status"`
+	ItemsProcessed   string   `xml:"StatusOfItems>ItemsProcessed"`
+	ItemsInvalid     string   `xml:"StatusOfItems>ItemsInvalid"`
 }
 
 // enetClient is the real implementation that talks to SYSPRO e.net REST.
@@ -138,11 +139,15 @@ func (c *enetClient) transaction(ctx context.Context, guid, businessObject, para
 	if err != nil {
 		return "", err
 	}
-	// e.net wraps the XML in a JSON string
+	// e.net may return JSON-wrapped or raw XML depending on version.
 	var xmlStr string
 	if err := json.Unmarshal(body, &xmlStr); err != nil {
 		xmlStr = strings.TrimSpace(string(body))
 	}
+	if xmlStr == "" {
+		return "", fmt.Errorf("transaction returned empty response")
+	}
+	c.logger.Debug("transaction response", "length", len(xmlStr), "first100", xmlStr[:min(100, len(xmlStr))])
 	return xmlStr, nil
 }
 
@@ -175,22 +180,33 @@ func (c *enetClient) get(ctx context.Context, path string, params url.Values) ([
 
 // parseSORTOIResponse interprets the XML string returned by a SORTOI transaction.
 func parseSORTOIResponse(xmlStr string) (*SalesOrderResult, error) {
+	// SYSPRO declares encoding="Windows-1252" which Go's xml package doesn't
+	// support natively. The actual content is ASCII-safe, so strip the declaration.
+	if i := strings.Index(xmlStr, "?>"); i != -1 {
+		xmlStr = strings.TrimSpace(xmlStr[i+2:])
+	}
+
 	var resp sortoiResponse
 	if err := xml.Unmarshal([]byte(xmlStr), &resp); err != nil {
 		return nil, fmt.Errorf("parsing SORTOI response XML: %w", err)
 	}
 
-	// SYSPRO signals failure via a non-empty ReturnCode or empty SalesOrder number.
-	if resp.ReturnCode != "" && resp.ReturnCode != "0" {
+	if resp.ValidationStatus != "Successful" {
 		return &SalesOrderResult{
 			Success:      false,
-			ErrorMessage: resp.Message,
+			ErrorMessage: fmt.Sprintf("SYSPRO validation failed (processed: %s, invalid: %s)", resp.ItemsProcessed, resp.ItemsInvalid),
 		}, nil
 	}
 
+	// SORTOI doesn't always echo back the generated SO number.
+	// When empty, use the customer PO number for traceability.
+	orderRef := resp.OrderNumber
+	if orderRef == "" {
+		orderRef = resp.CustomerPoNumber
+	}
+
 	return &SalesOrderResult{
-		SysproOrderNumber: resp.OrderNumber,
-		Success:           resp.OrderNumber != "",
-		ErrorMessage:      resp.Message,
+		SysproOrderNumber: orderRef,
+		Success:           true,
 	}, nil
 }

@@ -17,21 +17,36 @@ import (
 
 const testGUID = "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
 
-// successfulSORTOIResponse is the XML that SYSPRO returns on a successful SORTOI transaction.
+// successfulSORTOIResponse matches the real SYSPRO SORTOI response format.
 const successfulSORTOIResponse = `<SalesOrders>
-  <ReturnCode>0</ReturnCode>
-  <Message></Message>
   <Orders>
     <OrderHeader>
       <SalesOrder>SO12345</SalesOrder>
     </OrderHeader>
   </Orders>
+  <ValidationStatus>
+    <Status>Successful</Status>
+  </ValidationStatus>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsInvalid>000000</ItemsInvalid>
+  </StatusOfItems>
 </SalesOrders>`
 
-// failedSORTOIResponse simulates a SYSPRO business-logic error.
+// failedSORTOIResponse simulates a SYSPRO validation failure.
 const failedSORTOIResponse = `<SalesOrders>
-  <ReturnCode>1</ReturnCode>
-  <Message>Customer WEBS01 not found</Message>
+  <Orders>
+    <OrderHeader>
+      <SalesOrder/>
+    </OrderHeader>
+  </Orders>
+  <ValidationStatus>
+    <Status>Failed</Status>
+  </ValidationStatus>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsInvalid>000001</ItemsInvalid>
+  </StatusOfItems>
 </SalesOrders>`
 
 // fakeEnet is a configurable httptest server that mimics the SYSPRO e.net REST API.
@@ -194,8 +209,8 @@ func TestSubmitSalesOrder_TransactionSysproError(t *testing.T) {
 	if result.Success {
 		t.Error("expected Success=false for SYSPRO business error")
 	}
-	if !strings.Contains(result.ErrorMessage, "WEBS01") {
-		t.Errorf("expected error message to contain customer code, got: %q", result.ErrorMessage)
+	if !strings.Contains(result.ErrorMessage, "invalid") {
+		t.Errorf("expected error message to mention invalid items, got: %q", result.ErrorMessage)
 	}
 }
 
@@ -238,6 +253,21 @@ func TestParseSORTOIResponse_Failure(t *testing.T) {
 	}
 	if result.ErrorMessage == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+// TestParseSORTOIResponse_Windows1252 ensures the parser handles SYSPRO's encoding declaration.
+func TestParseSORTOIResponse_Windows1252(t *testing.T) {
+	xml1252 := `<?xml version="1.0" encoding="Windows-1252"?>` + successfulSORTOIResponse
+	result, err := parseSORTOIResponse(xml1252)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.SysproOrderNumber != "SO12345" {
+		t.Errorf("expected SO12345, got %q", result.SysproOrderNumber)
 	}
 }
 
