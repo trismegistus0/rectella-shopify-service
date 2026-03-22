@@ -77,9 +77,13 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		"<CustomerPoLine>0001</CustomerPoLine>",
 		"<StockCode>CBBQ0001</StockCode>",
 		"<OrderQty>2</OrderQty>",
+		"<OrderUom>EA</OrderUom>",
 		"<Price>599</Price>",
+		"<PriceUom>EA</PriceUom>",
+		"<CustomerPoLine>0002</CustomerPoLine>",
 		"<StockCode>CBBQ0002</StockCode>",
 		"<OrderQty>1</OrderQty>",
 		"<Price>12.5</Price>",
