@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,12 @@ type Config struct {
 	BatchInterval     time.Duration
 
 	LogLevel slog.Level
+
+	// Stock sync (optional — disabled if SysproSKUs is empty).
+	ShopifyAccessToken string
+	ShopifyLocationID  string
+	SysproWarehouse    string
+	SysproSKUs         []string
 }
 
 func Load() (*Config, error) {
@@ -60,6 +67,19 @@ func Load() (*Config, error) {
 	}
 	c.Port = port
 	c.AdminToken = os.Getenv("ADMIN_TOKEN")
+	c.ShopifyAccessToken = os.Getenv("SHOPIFY_ACCESS_TOKEN")
+	c.ShopifyLocationID = os.Getenv("SHOPIFY_LOCATION_ID")
+	c.SysproWarehouse = os.Getenv("SYSPRO_WAREHOUSE")
+
+	// Parse comma-separated SKU list.
+	if raw := os.Getenv("SYSPRO_SKUS"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				c.SysproSKUs = append(c.SysproSKUs, s)
+			}
+		}
+	}
 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables: %v", missing)
