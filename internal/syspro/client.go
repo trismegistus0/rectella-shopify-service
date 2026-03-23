@@ -45,8 +45,8 @@ type sortoiResponse struct {
 	ItemsInvalid     string   `xml:"StatusOfItems>ItemsInvalid"`
 }
 
-// enetClient is the real implementation that talks to SYSPRO e.net REST.
-type enetClient struct {
+// EnetClient is the real implementation that talks to SYSPRO e.net REST.
+type EnetClient struct {
 	baseURL    string
 	operator   string
 	password   string
@@ -56,8 +56,8 @@ type enetClient struct {
 }
 
 // NewEnetClient constructs a Client backed by the real SYSPRO e.net REST API.
-func NewEnetClient(baseURL, operator, password, companyID string, logger *slog.Logger) Client {
-	return &enetClient{
+func NewEnetClient(baseURL, operator, password, companyID string, logger *slog.Logger) *EnetClient {
+	return &EnetClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		operator:   operator,
 		password:   password,
@@ -69,7 +69,7 @@ func NewEnetClient(baseURL, operator, password, companyID string, logger *slog.L
 
 // SubmitSalesOrder performs a full logon → SORTOI transaction → logoff cycle.
 // Logoff is always attempted even when an earlier step fails.
-func (c *enetClient) SubmitSalesOrder(ctx context.Context, order model.Order, lines []model.OrderLine) (*SalesOrderResult, error) {
+func (c *EnetClient) SubmitSalesOrder(ctx context.Context, order model.Order, lines []model.OrderLine) (*SalesOrderResult, error) {
 	guid, err := c.logon(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("syspro logon: %w", err)
@@ -96,7 +96,7 @@ func (c *enetClient) SubmitSalesOrder(ctx context.Context, order model.Order, li
 }
 
 // logon calls GET /Logon and returns the session GUID.
-func (c *enetClient) logon(ctx context.Context) (string, error) {
+func (c *EnetClient) logon(ctx context.Context) (string, error) {
 	params := url.Values{
 		"Operator":         {c.operator},
 		"OperatorPassword": {c.password},
@@ -119,7 +119,7 @@ func (c *enetClient) logon(ctx context.Context) (string, error) {
 }
 
 // logoff calls GET /Logoff with the session GUID.
-func (c *enetClient) logoff(ctx context.Context, guid string) error {
+func (c *EnetClient) logoff(ctx context.Context, guid string) error {
 	params := url.Values{
 		"UserId": {guid},
 	}
@@ -128,7 +128,7 @@ func (c *enetClient) logoff(ctx context.Context, guid string) error {
 }
 
 // transaction calls GET /Transaction/Post and returns the raw XML response body.
-func (c *enetClient) transaction(ctx context.Context, guid, businessObject, paramsXML, dataXML string) (string, error) {
+func (c *EnetClient) transaction(ctx context.Context, guid, businessObject, paramsXML, dataXML string) (string, error) {
 	params := url.Values{
 		"UserId":         {guid},
 		"BusinessObject": {businessObject},
@@ -151,8 +151,31 @@ func (c *enetClient) transaction(ctx context.Context, guid, businessObject, para
 	return xmlStr, nil
 }
 
+// query calls GET /Query/Query and returns the raw XML response body.
+// Query-class business objects take only XmlIn (no XmlParameters).
+func (c *EnetClient) query(ctx context.Context, guid, businessObject, xmlIn string) (string, error) {
+	params := url.Values{
+		"UserId":         {guid},
+		"BusinessObject": {businessObject},
+		"XmlIn":          {xmlIn},
+	}
+	body, err := c.get(ctx, "/Query/Query", params)
+	if err != nil {
+		return "", err
+	}
+	var xmlStr string
+	if err := json.Unmarshal(body, &xmlStr); err != nil {
+		xmlStr = strings.TrimSpace(string(body))
+	}
+	if xmlStr == "" {
+		return "", fmt.Errorf("query returned empty response")
+	}
+	c.logger.Debug("query response", "length", len(xmlStr), "first100", xmlStr[:min(100, len(xmlStr))])
+	return xmlStr, nil
+}
+
 // get sends a GET request with query parameters and returns the response body.
-func (c *enetClient) get(ctx context.Context, path string, params url.Values) ([]byte, error) {
+func (c *EnetClient) get(ctx context.Context, path string, params url.Values) ([]byte, error) {
 	target := c.baseURL + path + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)

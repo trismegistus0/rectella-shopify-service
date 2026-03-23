@@ -9,12 +9,12 @@ import (
 
 // enetSession is an open SYSPRO e.net session backed by a session GUID.
 type enetSession struct {
-	client *enetClient
+	client *EnetClient
 	guid   string
 }
 
 // OpenSession logs on to SYSPRO and returns a Session for submitting multiple orders.
-func (c *enetClient) OpenSession(ctx context.Context) (Session, error) {
+func (c *EnetClient) OpenSession(ctx context.Context) (Session, error) {
 	guid, err := c.logon(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("syspro logon: %w", err)

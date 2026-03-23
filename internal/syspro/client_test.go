@@ -55,17 +55,20 @@ type fakeEnet struct {
 	logonCalls    int
 	logoffCalls   int
 	transactCalls int
+	queryCalls    int
 
 	// Behaviour overrides
-	logonErr    bool   // return HTTP 500 on /Logon
-	transactXML string // XML to return from /Transaction (default: successfulSORTOIResponse)
+	logonErr       bool              // return HTTP 500 on /Logon
+	transactXML    string            // XML to return from /Transaction (default: successfulSORTOIResponse)
+	queryResponses map[string]string // SKU -> response XML for /Query/Query
+	queryErr       bool              // return HTTP 500 on /Query/Query
 
 	server *httptest.Server
 }
 
 func newFakeEnet(t *testing.T) *fakeEnet {
 	t.Helper()
-	f := &fakeEnet{transactXML: successfulSORTOIResponse}
+	f := &fakeEnet{transactXML: successfulSORTOIResponse, queryResponses: make(map[string]string)}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -100,6 +103,27 @@ func newFakeEnet(t *testing.T) *fakeEnet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(f.transactXML)
 
+		case "/Query/Query":
+			f.queryCalls++
+			if f.queryErr {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if params.Get("UserId") != testGUID {
+				http.Error(w, "bad UserId", http.StatusBadRequest)
+				return
+			}
+			xmlIn := params.Get("XmlIn")
+			respXML := `<InvQuery><QueryOptions><StockCode>UNKNOWN</StockCode></QueryOptions></InvQuery>`
+			for sku, xml := range f.queryResponses {
+				if strings.Contains(xmlIn, sku) {
+					respXML = xml
+					break
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(respXML)
+
 		default:
 			http.NotFound(w, r)
 		}
@@ -108,9 +132,9 @@ func newFakeEnet(t *testing.T) *fakeEnet {
 	return f
 }
 
-func (f *fakeEnet) client(t *testing.T) *enetClient {
+func (f *fakeEnet) client(t *testing.T) *EnetClient {
 	t.Helper()
-	return &enetClient{
+	return &EnetClient{
 		baseURL:    f.server.URL,
 		operator:   "ADMIN",
 		password:   "secret",
@@ -281,7 +305,7 @@ func TestParseSORTOIResponse_InvalidXML(t *testing.T) {
 
 // TestNewEnetClient_Interface verifies the constructor satisfies the Client interface.
 func TestNewEnetClient_Interface(t *testing.T) {
-	_ = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
+	var _ Client = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
 	// Compile-time check is sufficient; this test documents the guarantee.
 	_ = fmt.Sprintf("%T", NewEnetClient)
 }
