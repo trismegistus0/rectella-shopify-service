@@ -283,3 +283,32 @@ func (db *DB) ListOrdersByStatus(ctx context.Context, status model.OrderStatus) 
 	}
 	return orders, rows.Err()
 }
+
+// FetchReservedQuantities returns the total quantity of each SKU in
+// pending or processing orders. These orders have NOT been submitted to
+// SYSPRO yet, so their quantities must be subtracted from SYSPRO's
+// QtyAvailable to avoid overselling.
+func (db *DB) FetchReservedQuantities(ctx context.Context) (map[string]int, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT ol.sku, COALESCE(SUM(ol.quantity), 0)::int AS reserved
+		FROM order_lines ol
+		JOIN orders o ON o.id = ol.order_id
+		WHERE o.status IN ('pending', 'processing')
+		GROUP BY ol.sku`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying reserved quantities: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var sku string
+		var qty int
+		if err := rows.Scan(&sku, &qty); err != nil {
+			return nil, fmt.Errorf("scanning reserved quantity: %w", err)
+		}
+		result[sku] = qty
+	}
+	return result, rows.Err()
+}
