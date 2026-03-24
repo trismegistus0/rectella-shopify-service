@@ -127,8 +127,8 @@ type FulfilmentInput struct {
 // CreateFulfillment creates a fulfilment in Shopify. Returns the fulfillment GID on success.
 // If the order is already fulfilled, it logs at debug level and returns ("", nil).
 func (c *FulfilmentClient) CreateFulfillment(ctx context.Context, input FulfilmentInput) (string, error) {
-	const mutation = `mutation fulfillmentCreateV2($fulfillment: FulfillmentV2Input!) {
-  fulfillmentCreateV2(fulfillment: $fulfillment) {
+	const mutation = `mutation fulfillmentCreate($fulfillment: FulfillmentInput!) {
+  fulfillmentCreate(fulfillment: $fulfillment) {
     fulfillment { id status }
     userErrors { field message }
   }
@@ -153,7 +153,7 @@ func (c *FulfilmentClient) CreateFulfillment(ctx context.Context, input Fulfilme
 		return "", fmt.Errorf("creating fulfillment: %w", err)
 	}
 	var result struct {
-		FulfillmentCreateV2 struct {
+		FulfillmentCreate struct {
 			Fulfillment *struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
@@ -162,12 +162,12 @@ func (c *FulfilmentClient) CreateFulfillment(ctx context.Context, input Fulfilme
 				Field   []string `json:"field"`
 				Message string   `json:"message"`
 			} `json:"userErrors"`
-		} `json:"fulfillmentCreateV2"`
+		} `json:"fulfillmentCreate"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("parsing fulfillment response: %w", err)
 	}
-	for _, ue := range result.FulfillmentCreateV2.UserErrors {
+	for _, ue := range result.FulfillmentCreate.UserErrors {
 		msg := strings.ToLower(ue.Message)
 		if strings.Contains(msg, "already fulfilled") || strings.Contains(msg, "already been fulfilled") {
 			c.logger.Debug("order already fulfilled, treating as success",
@@ -178,8 +178,8 @@ func (c *FulfilmentClient) CreateFulfillment(ctx context.Context, input Fulfilme
 		}
 		return "", fmt.Errorf("fulfillment user error: %s", ue.Message)
 	}
-	if result.FulfillmentCreateV2.Fulfillment != nil {
-		return result.FulfillmentCreateV2.Fulfillment.ID, nil
+	if result.FulfillmentCreate.Fulfillment != nil {
+		return result.FulfillmentCreate.Fulfillment.ID, nil
 	}
 	return "", nil
 }

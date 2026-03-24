@@ -70,7 +70,7 @@ func TestGetFulfillmentOrderID_SkipsClosed(t *testing.T) {
 }
 
 func TestCreateFulfillment_Success(t *testing.T) {
-	resp := `{"data":{"fulfillmentCreateV2":{"fulfillment":{"id":"gid://shopify/Fulfillment/999","status":"SUCCESS"},"userErrors":[]}}}`
+	resp := `{"data":{"fulfillmentCreate":{"fulfillment":{"id":"gid://shopify/Fulfillment/999","status":"SUCCESS"},"userErrors":[]}}}`
 	c := testClient(t, shopifyHandler(t, resp))
 	id, err := c.CreateFulfillment(context.Background(), FulfilmentInput{
 		FulfillmentOrderID: "gid://shopify/FulfillmentOrder/111",
@@ -88,7 +88,7 @@ func TestCreateFulfillment_WithTracking(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"fulfillmentCreateV2":{"fulfillment":{"id":"gid://shopify/Fulfillment/999","status":"SUCCESS"},"userErrors":[]}}}`))
+		w.Write([]byte(`{"data":{"fulfillmentCreate":{"fulfillment":{"id":"gid://shopify/Fulfillment/999","status":"SUCCESS"},"userErrors":[]}}}`))
 	}
 	c := testClient(t, handler)
 	_, err := c.CreateFulfillment(context.Background(), FulfilmentInput{
@@ -118,7 +118,7 @@ func TestCreateFulfillment_WithTracking(t *testing.T) {
 }
 
 func TestCreateFulfillment_AlreadyFulfilled(t *testing.T) {
-	resp := `{"data":{"fulfillmentCreateV2":{"fulfillment":null,"userErrors":[{"field":["fulfillmentOrderId"],"message":"This order has already been fulfilled"}]}}}`
+	resp := `{"data":{"fulfillmentCreate":{"fulfillment":null,"userErrors":[{"field":["fulfillmentOrderId"],"message":"This order has already been fulfilled"}]}}}`
 	c := testClient(t, shopifyHandler(t, resp))
 	id, err := c.CreateFulfillment(context.Background(), FulfilmentInput{
 		FulfillmentOrderID: "gid://shopify/FulfillmentOrder/111",
@@ -132,7 +132,7 @@ func TestCreateFulfillment_AlreadyFulfilled(t *testing.T) {
 }
 
 func TestCreateFulfillment_UserError(t *testing.T) {
-	resp := `{"data":{"fulfillmentCreateV2":{"fulfillment":null,"userErrors":[{"field":["base"],"message":"Invalid fulfillment order"}]}}}`
+	resp := `{"data":{"fulfillmentCreate":{"fulfillment":null,"userErrors":[{"field":["base"],"message":"Invalid fulfillment order"}]}}}`
 	c := testClient(t, shopifyHandler(t, resp))
 	_, err := c.CreateFulfillment(context.Background(), FulfilmentInput{
 		FulfillmentOrderID: "gid://shopify/FulfillmentOrder/111",
