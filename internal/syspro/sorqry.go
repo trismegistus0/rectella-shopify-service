@@ -11,10 +11,10 @@ import (
 // SORQRYResult holds the dispatch-relevant fields from a SYSPRO sales order query.
 type SORQRYResult struct {
 	SalesOrder     string
-	OrderStatus    string // "6" = complete/invoiced
-	TrackingNumber string // from ShippingInstrs, may be empty
-	Carrier        string // from Courier, may be empty
-	ShippedDate    string // from InvoiceDate, may be empty
+	OrderStatus    string // "9" = complete, "\" = cancelled (verified against RILT)
+	TrackingNumber string // not available in SORQRY header; reserved for future use
+	Carrier        string // from ShippingInstrs (e.g. "Avanti"), may be empty
+	ShippedDate    string // not reliably available; reserved for future use
 }
 
 type sorqryRequest struct {
@@ -24,7 +24,7 @@ type sorqryRequest struct {
 }
 
 type sorqryKey struct {
-	SalesOrderNumber string `xml:"SalesOrderNumber"`
+	SalesOrder string `xml:"SalesOrder"`
 }
 
 type sorqryOption struct {
@@ -35,26 +35,21 @@ type sorqryOption struct {
 	IncludeCommentLines    string `xml:"IncludeCommentLines"`
 }
 
+// sorqryResponse maps the flat <SorDetail> response from SYSPRO SORQRY.
+// Fields are directly under the root element, not nested.
 type sorqryResponse struct {
-	XMLName xml.Name          `xml:"SorDetail"`
-	Orders  sorqryOrders      `xml:"Orders"`
-}
-
-type sorqryOrders struct {
-	OrderHeader *sorqryOrderHeader `xml:"OrderHeader"`
-}
-
-type sorqryOrderHeader struct {
-	SalesOrderNumber string `xml:"SalesOrderNumber"`
-	OrderStatus      string `xml:"OrderStatus"`
-	ShippingInstrs   string `xml:"ShippingInstrs"`
-	Courier          string `xml:"Courier"`
-	InvoiceDate      string `xml:"InvoiceDate"`
+	XMLName          xml.Name `xml:"SorDetail"`
+	SalesOrder       string   `xml:"SalesOrder"`
+	OrderStatus      string   `xml:"OrderStatus"`
+	OrderStatusDesc  string   `xml:"OrderStatusDesc"`
+	ShippingInstrs   string   `xml:"ShippingInstrs"`
+	ShippingInstrsCod string  `xml:"ShippingInstrsCod"`
+	LastInvoice      string   `xml:"LastInvoice"`
 }
 
 func buildSORQRY(orderNumber string) (string, error) {
 	req := sorqryRequest{
-		Key: sorqryKey{SalesOrderNumber: orderNumber},
+		Key: sorqryKey{SalesOrder: orderNumber},
 		Option: sorqryOption{
 			IncludeStockedLines:    "N",
 			IncludeNonStockedLines: "N",
@@ -78,16 +73,13 @@ func parseSORQRY(xmlStr string) (*SORQRYResult, error) {
 	if err := xml.Unmarshal([]byte(xmlStr), &resp); err != nil {
 		return nil, fmt.Errorf("parsing SORQRY response: %w", err)
 	}
-	if resp.Orders.OrderHeader == nil {
-		return nil, fmt.Errorf("parsing SORQRY response: no OrderHeader in response")
+	if resp.SalesOrder == "" {
+		return nil, fmt.Errorf("parsing SORQRY response: no SalesOrder in response")
 	}
-	h := resp.Orders.OrderHeader
 	return &SORQRYResult{
-		SalesOrder:     strings.TrimSpace(h.SalesOrderNumber),
-		OrderStatus:    strings.TrimSpace(h.OrderStatus),
-		TrackingNumber: strings.TrimSpace(h.ShippingInstrs),
-		Carrier:        strings.TrimSpace(h.Courier),
-		ShippedDate:    strings.TrimSpace(h.InvoiceDate),
+		SalesOrder:  strings.TrimSpace(resp.SalesOrder),
+		OrderStatus: strings.TrimSpace(resp.OrderStatus),
+		Carrier:     strings.TrimSpace(resp.ShippingInstrs),
 	}, nil
 }
 

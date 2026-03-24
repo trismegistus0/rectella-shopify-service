@@ -8,12 +8,12 @@ import (
 )
 
 func TestBuildSORQRY(t *testing.T) {
-	xmlStr, err := buildSORQRY("SO12345")
+	xmlStr, err := buildSORQRY("000100")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(xmlStr, "<SalesOrderNumber>SO12345</SalesOrderNumber>") {
-		t.Errorf("expected SalesOrderNumber in XML, got: %s", xmlStr)
+	if !strings.Contains(xmlStr, "<SalesOrder>000100</SalesOrder>") {
+		t.Errorf("expected SalesOrder in XML, got: %s", xmlStr)
 	}
 	for _, tag := range []string{
 		"<IncludeStockedLines>N</IncludeStockedLines>",
@@ -29,7 +29,7 @@ func TestBuildSORQRY(t *testing.T) {
 }
 
 func TestBuildSORQRY_RoundTrip(t *testing.T) {
-	xmlStr, err := buildSORQRY("SO12345")
+	xmlStr, err := buildSORQRY("000100")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,24 +37,23 @@ func TestBuildSORQRY_RoundTrip(t *testing.T) {
 	if err := xml.Unmarshal([]byte(xmlStr), &req); err != nil {
 		t.Fatalf("round-trip unmarshal failed: %v", err)
 	}
-	if req.Key.SalesOrderNumber != "SO12345" {
-		t.Errorf("expected SalesOrderNumber=SO12345, got %q", req.Key.SalesOrderNumber)
+	if req.Key.SalesOrder != "000100" {
+		t.Errorf("expected SalesOrder=000100, got %q", req.Key.SalesOrder)
 	}
 	if req.Option.IncludeStockedLines != "N" {
 		t.Errorf("expected IncludeStockedLines=N, got %q", req.Option.IncludeStockedLines)
 	}
 }
 
+// sampleSORQRYResponse matches the real SYSPRO RILT response format:
+// flat structure under <SorDetail>, fields directly on root element.
 const sampleSORQRYResponse = `<SorDetail>
-  <Orders>
-    <OrderHeader>
-      <SalesOrderNumber>SO12345</SalesOrderNumber>
-      <OrderStatus>6</OrderStatus>
-      <ShippingInstrs>TRACK123</ShippingInstrs>
-      <Courier>DPD</Courier>
-      <InvoiceDate>2026-03-24</InvoiceDate>
-    </OrderHeader>
-  </Orders>
+<SalesOrder>000100</SalesOrder>
+<OrderStatus>9</OrderStatus>
+<OrderStatusDesc>Complete</OrderStatusDesc>
+<ShippingInstrs>Avanti</ShippingInstrs>
+<ShippingInstrsCod>AVA</ShippingInstrsCod>
+<LastInvoice>200069</LastInvoice>
 </SorDetail>`
 
 func TestParseSORQRY_Success(t *testing.T) {
@@ -62,20 +61,14 @@ func TestParseSORQRY_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.SalesOrder != "SO12345" {
-		t.Errorf("expected SalesOrder=SO12345, got %q", result.SalesOrder)
+	if result.SalesOrder != "000100" {
+		t.Errorf("expected SalesOrder=000100, got %q", result.SalesOrder)
 	}
-	if result.OrderStatus != "6" {
-		t.Errorf("expected OrderStatus=6, got %q", result.OrderStatus)
+	if result.OrderStatus != "9" {
+		t.Errorf("expected OrderStatus=9, got %q", result.OrderStatus)
 	}
-	if result.TrackingNumber != "TRACK123" {
-		t.Errorf("expected TrackingNumber=TRACK123, got %q", result.TrackingNumber)
-	}
-	if result.Carrier != "DPD" {
-		t.Errorf("expected Carrier=DPD, got %q", result.Carrier)
-	}
-	if result.ShippedDate != "2026-03-24" {
-		t.Errorf("expected ShippedDate=2026-03-24, got %q", result.ShippedDate)
+	if result.Carrier != "Avanti" {
+		t.Errorf("expected Carrier=Avanti, got %q", result.Carrier)
 	}
 }
 
@@ -85,11 +78,11 @@ func TestParseSORQRY_Windows1252(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.SalesOrder != "SO12345" {
-		t.Errorf("expected SalesOrder=SO12345, got %q", result.SalesOrder)
+	if result.SalesOrder != "000100" {
+		t.Errorf("expected SalesOrder=000100, got %q", result.SalesOrder)
 	}
-	if result.OrderStatus != "6" {
-		t.Errorf("expected OrderStatus=6, got %q", result.OrderStatus)
+	if result.OrderStatus != "9" {
+		t.Errorf("expected OrderStatus=9, got %q", result.OrderStatus)
 	}
 }
 
@@ -102,35 +95,30 @@ func TestParseSORQRY_InvalidXML(t *testing.T) {
 
 func TestQueryDispatchedOrders_Success(t *testing.T) {
 	fake := newFakeEnet(t)
-	fake.queryResponses["SO12345"] = sampleSORQRYResponse
-	fake.queryResponses["SO12346"] = `<SorDetail>
-  <Orders>
-    <OrderHeader>
-      <SalesOrderNumber>SO12346</SalesOrderNumber>
-      <OrderStatus>4</OrderStatus>
-      <ShippingInstrs></ShippingInstrs>
-      <Courier></Courier>
-      <InvoiceDate></InvoiceDate>
-    </OrderHeader>
-  </Orders>
+	fake.queryResponses["000100"] = sampleSORQRYResponse
+	fake.queryResponses["000101"] = `<SorDetail>
+<SalesOrder>000101</SalesOrder>
+<OrderStatus>2</OrderStatus>
+<OrderStatusDesc>Open</OrderStatusDesc>
+<ShippingInstrs></ShippingInstrs>
 </SorDetail>`
 	c := fake.client(t)
 
-	result, err := c.QueryDispatchedOrders(context.Background(), []string{"SO12345", "SO12346"})
+	result, err := c.QueryDispatchedOrders(context.Background(), []string{"000100", "000101"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result))
 	}
-	if result["SO12345"].OrderStatus != "6" {
-		t.Errorf("SO12345: expected OrderStatus=6, got %q", result["SO12345"].OrderStatus)
+	if result["000100"].OrderStatus != "9" {
+		t.Errorf("000100: expected OrderStatus=9, got %q", result["000100"].OrderStatus)
 	}
-	if result["SO12345"].TrackingNumber != "TRACK123" {
-		t.Errorf("SO12345: expected TrackingNumber=TRACK123, got %q", result["SO12345"].TrackingNumber)
+	if result["000100"].Carrier != "Avanti" {
+		t.Errorf("000100: expected Carrier=Avanti, got %q", result["000100"].Carrier)
 	}
-	if result["SO12346"].OrderStatus != "4" {
-		t.Errorf("SO12346: expected OrderStatus=4, got %q", result["SO12346"].OrderStatus)
+	if result["000101"].OrderStatus != "2" {
+		t.Errorf("000101: expected OrderStatus=2, got %q", result["000101"].OrderStatus)
 	}
 	if fake.logonCalls != 1 {
 		t.Errorf("expected 1 logon, got %d", fake.logonCalls)
@@ -145,20 +133,20 @@ func TestQueryDispatchedOrders_Success(t *testing.T) {
 
 func TestQueryDispatchedOrders_PartialFailure(t *testing.T) {
 	fake := newFakeEnet(t)
-	fake.queryResponses["SO12345"] = sampleSORQRYResponse
-	// SO12346 has no response configured, so fakeEnet returns the default INVQRY-shaped XML
-	// which will fail to parse as SORQRY (no OrderHeader).
+	fake.queryResponses["000100"] = sampleSORQRYResponse
+	// 000101 has no response configured, so fakeEnet returns the default INVQRY-shaped XML
+	// which will fail to parse as SORQRY (no SalesOrder field).
 	c := fake.client(t)
 
-	result, err := c.QueryDispatchedOrders(context.Background(), []string{"SO12345", "SO12346"})
+	result, err := c.QueryDispatchedOrders(context.Background(), []string{"000100", "000101"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result (partial), got %d", len(result))
 	}
-	if result["SO12345"].OrderStatus != "6" {
-		t.Errorf("SO12345: expected OrderStatus=6, got %q", result["SO12345"].OrderStatus)
+	if result["000100"].OrderStatus != "9" {
+		t.Errorf("000100: expected OrderStatus=9, got %q", result["000100"].OrderStatus)
 	}
 }
 
@@ -167,7 +155,7 @@ func TestQueryDispatchedOrders_LogonFailure(t *testing.T) {
 	fake.logonErr = true
 	c := fake.client(t)
 
-	_, err := c.QueryDispatchedOrders(context.Background(), []string{"SO12345"})
+	_, err := c.QueryDispatchedOrders(context.Background(), []string{"000100"})
 	if err == nil {
 		t.Fatal("expected error on logon failure, got nil")
 	}

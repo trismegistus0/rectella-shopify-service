@@ -89,10 +89,10 @@ vpn_up() {
     exit 1
   fi
 
-  # Launch openconnect excluded from Mullvad tunnel.
-  # mullvad-exclude uses cgroups — child processes (via sudo) inherit the exclusion.
-  echo "Connecting to Rectella VPN (excluded from Mullvad)..."
-  echo "$VPN_PASS" | mullvad-exclude sudo "$OPENCONNECT" \
+  # Launch openconnect. Mullvad runs on the Flint 3 router now, not locally,
+  # so no mullvad-exclude wrapper needed.
+  echo "Connecting to Rectella VPN..."
+  echo "$VPN_PASS" | sudo "$OPENCONNECT" \
     --user="$VPN_USER" \
     --passwd-on-stdin \
     --background \
