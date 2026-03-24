@@ -25,9 +25,9 @@ type invqryOption struct {
 }
 
 type invqryResponse struct {
-	XMLName       xml.Name         `xml:"InvQuery"`
-	QueryOptions  invqryOptions    `xml:"QueryOptions"`
-	WarehouseItem *invqryWarehouse `xml:"WarehouseItem"`
+	XMLName        xml.Name          `xml:"InvQuery"`
+	QueryOptions   invqryOptions     `xml:"QueryOptions"`
+	WarehouseItems []invqryWarehouse `xml:"WarehouseItem"`
 }
 
 type invqryOptions struct {
@@ -36,10 +36,9 @@ type invqryOptions struct {
 }
 
 type invqryWarehouse struct {
-	Warehouse        string `xml:"Warehouse"`
-	QtyOnHand        string `xml:"QtyOnHand"`
-	QtyAvailable     string `xml:"QtyAvailable"`
-	QtyAllocatedToSo string `xml:"QtyAllocatedToSo"`
+	Warehouse    string `xml:"Warehouse"`
+	QtyOnHand    string `xml:"QtyOnHand"`
+	AvailableQty string `xml:"AvailableQty"` // SYSPRO uses AvailableQty, not QtyAvailable
 }
 
 func buildINVQRY(sku, warehouse string) (string, error) {
@@ -102,13 +101,22 @@ func (c *EnetClient) QueryStock(ctx context.Context, skus []string, warehouse st
 			c.logger.Warn("parsing INVQRY response", "sku", sku, "error", err)
 			continue
 		}
-		if resp.WarehouseItem == nil {
+		// SYSPRO returns all warehouses even with filter type "S".
+		// Find the matching warehouse in the response.
+		var found *invqryWarehouse
+		for i := range resp.WarehouseItems {
+			if strings.TrimSpace(resp.WarehouseItems[i].Warehouse) == warehouse {
+				found = &resp.WarehouseItems[i]
+				break
+			}
+		}
+		if found == nil {
 			c.logger.Warn("stock code not found in warehouse", "sku", sku, "warehouse", warehouse)
 			continue
 		}
-		qty, err := strconv.ParseFloat(strings.TrimSpace(resp.WarehouseItem.QtyAvailable), 64)
+		qty, err := strconv.ParseFloat(strings.TrimSpace(found.AvailableQty), 64)
 		if err != nil {
-			c.logger.Warn("parsing QtyAvailable", "sku", sku, "value", resp.WarehouseItem.QtyAvailable, "error", err)
+			c.logger.Warn("parsing AvailableQty", "sku", sku, "value", found.AvailableQty, "error", err)
 			continue
 		}
 		result[sku] = qty

@@ -43,16 +43,22 @@ func TestBuildINVQRY_RoundTrip(t *testing.T) {
 	}
 }
 
+// sampleINVQRYResponse matches the real SYSPRO RILT response format:
+// multiple WarehouseItem elements, AvailableQty (not QtyAvailable).
 const sampleINVQRYResponse = `<InvQuery>
   <QueryOptions>
-    <StockCode>CBBQ0001</StockCode>
-    <Description>MBBQ Kamado BBQ</Description>
+    <StockCode>MBBQ0159</StockCode>
+    <Description>Bar-Be-Quick MBBQ Pizza Kettle</Description>
   </QueryOptions>
   <WarehouseItem>
-    <Warehouse>WH01</Warehouse>
-    <QtyOnHand>150.000</QtyOnHand>
-    <QtyAvailable>120.000</QtyAvailable>
-    <QtyAllocatedToSo>30.000</QtyAllocatedToSo>
+    <Warehouse>AAAA</Warehouse>
+    <QtyOnHand>            0.000000</QtyOnHand>
+    <AvailableQty>            0.000000</AvailableQty>
+  </WarehouseItem>
+  <WarehouseItem>
+    <Warehouse>BURN</Warehouse>
+    <QtyOnHand>           75.000000</QtyOnHand>
+    <AvailableQty>           75.000000</AvailableQty>
   </WarehouseItem>
 </InvQuery>`
 
@@ -61,14 +67,15 @@ func TestParseINVQRY_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.QueryOptions.StockCode != "CBBQ0001" {
-		t.Errorf("expected StockCode=CBBQ0001, got %q", resp.QueryOptions.StockCode)
+	if resp.QueryOptions.StockCode != "MBBQ0159" {
+		t.Errorf("expected StockCode=MBBQ0159, got %q", resp.QueryOptions.StockCode)
 	}
-	if resp.WarehouseItem == nil {
-		t.Fatal("expected WarehouseItem to be non-nil")
+	if len(resp.WarehouseItems) != 2 {
+		t.Fatalf("expected 2 WarehouseItems, got %d", len(resp.WarehouseItems))
 	}
-	if resp.WarehouseItem.QtyAvailable != "120.000" {
-		t.Errorf("expected QtyAvailable=120.000, got %q", resp.WarehouseItem.QtyAvailable)
+	burn := resp.WarehouseItems[1]
+	if strings.TrimSpace(burn.AvailableQty) != "75.000000" {
+		t.Errorf("expected AvailableQty=75.000000, got %q", burn.AvailableQty)
 	}
 }
 
@@ -78,11 +85,8 @@ func TestParseINVQRY_Windows1252(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.WarehouseItem == nil {
-		t.Fatal("expected WarehouseItem to be non-nil")
-	}
-	if resp.WarehouseItem.QtyAvailable != "120.000" {
-		t.Errorf("expected QtyAvailable=120.000, got %q", resp.WarehouseItem.QtyAvailable)
+	if len(resp.WarehouseItems) != 2 {
+		t.Fatalf("expected 2 WarehouseItems, got %d", len(resp.WarehouseItems))
 	}
 }
 
@@ -94,8 +98,8 @@ func TestParseINVQRY_EmptyWarehouse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.WarehouseItem != nil {
-		t.Errorf("expected nil WarehouseItem for unknown stock code")
+	if len(resp.WarehouseItems) != 0 {
+		t.Errorf("expected 0 WarehouseItems for unknown stock code, got %d", len(resp.WarehouseItems))
 	}
 }
 
@@ -108,29 +112,28 @@ func TestParseINVQRY_InvalidXML(t *testing.T) {
 
 func TestQueryStock_Success(t *testing.T) {
 	fake := newFakeEnet(t)
-	fake.queryResponses["CBBQ0001"] = sampleINVQRYResponse
-	fake.queryResponses["CBBQ0002"] = `<InvQuery>
-  <QueryOptions><StockCode>CBBQ0002</StockCode><Description>BBQ Starter</Description></QueryOptions>
+	fake.queryResponses["MBBQ0159"] = sampleINVQRYResponse
+	fake.queryResponses["MBBQ0160"] = `<InvQuery>
+  <QueryOptions><StockCode>MBBQ0160</StockCode><Description>BBQ Starter</Description></QueryOptions>
   <WarehouseItem>
-    <Warehouse>WH01</Warehouse>
+    <Warehouse>BURN</Warehouse>
     <QtyOnHand>50.000</QtyOnHand>
-    <QtyAvailable>45.000</QtyAvailable>
-    <QtyAllocatedToSo>5.000</QtyAllocatedToSo>
+    <AvailableQty>45.000</AvailableQty>
   </WarehouseItem>
 </InvQuery>`
 	c := fake.client(t)
-	result, err := c.QueryStock(context.Background(), []string{"CBBQ0001", "CBBQ0002"}, "WH01")
+	result, err := c.QueryStock(context.Background(), []string{"MBBQ0159", "MBBQ0160"}, "BURN")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result))
 	}
-	if result["CBBQ0001"] != 120.0 {
-		t.Errorf("CBBQ0001: expected 120.0, got %f", result["CBBQ0001"])
+	if result["MBBQ0159"] != 75.0 {
+		t.Errorf("MBBQ0159: expected 75.0, got %f", result["MBBQ0159"])
 	}
-	if result["CBBQ0002"] != 45.0 {
-		t.Errorf("CBBQ0002: expected 45.0, got %f", result["CBBQ0002"])
+	if result["MBBQ0160"] != 45.0 {
+		t.Errorf("MBBQ0160: expected 45.0, got %f", result["MBBQ0160"])
 	}
 	if fake.logonCalls != 1 {
 		t.Errorf("expected 1 logon, got %d", fake.logonCalls)
@@ -145,17 +148,17 @@ func TestQueryStock_Success(t *testing.T) {
 
 func TestQueryStock_PartialFailure(t *testing.T) {
 	fake := newFakeEnet(t)
-	fake.queryResponses["CBBQ0001"] = sampleINVQRYResponse
+	fake.queryResponses["MBBQ0159"] = sampleINVQRYResponse
 	c := fake.client(t)
-	result, err := c.QueryStock(context.Background(), []string{"CBBQ0001", "CBBQ0002"}, "WH01")
+	result, err := c.QueryStock(context.Background(), []string{"MBBQ0159", "MBBQ0160"}, "BURN")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result (partial), got %d", len(result))
 	}
-	if result["CBBQ0001"] != 120.0 {
-		t.Errorf("CBBQ0001: expected 120.0, got %f", result["CBBQ0001"])
+	if result["MBBQ0159"] != 75.0 {
+		t.Errorf("MBBQ0159: expected 75.0, got %f", result["MBBQ0159"])
 	}
 }
 
@@ -163,7 +166,7 @@ func TestQueryStock_LogonFailure(t *testing.T) {
 	fake := newFakeEnet(t)
 	fake.logonErr = true
 	c := fake.client(t)
-	_, err := c.QueryStock(context.Background(), []string{"CBBQ0001"}, "WH01")
+	_, err := c.QueryStock(context.Background(), []string{"MBBQ0159"}, "BURN")
 	if err == nil {
 		t.Fatal("expected error on logon failure, got nil")
 	}
@@ -176,7 +179,7 @@ func TestQueryStock_QueryError(t *testing.T) {
 	fake := newFakeEnet(t)
 	fake.queryErr = true
 	c := fake.client(t)
-	result, err := c.QueryStock(context.Background(), []string{"CBBQ0001"}, "WH01")
+	result, err := c.QueryStock(context.Background(), []string{"MBBQ0159"}, "BURN")
 	if err != nil {
 		t.Fatalf("unexpected error (query errors are per-SKU): %v", err)
 	}
