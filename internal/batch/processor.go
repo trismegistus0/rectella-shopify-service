@@ -155,6 +155,7 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 
 		p.logger.Error("SYSPRO submission failed (infra)",
 			"order_id", order.ID,
+			"shopify_order_id", order.ShopifyOrderID,
 			"order_number", order.OrderNumber,
 			"attempts", newAttempts,
 			"error", err,
@@ -175,6 +176,7 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 
 		p.logger.Warn("SYSPRO rejected order",
 			"order_id", order.ID,
+			"shopify_order_id", order.ShopifyOrderID,
 			"order_number", order.OrderNumber,
 			"error", result.ErrorMessage,
 		)
@@ -192,6 +194,7 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 
 	p.logger.Info("order submitted to SYSPRO",
 		"order_id", order.ID,
+		"shopify_order_id", order.ShopifyOrderID,
 		"order_number", order.OrderNumber,
 		"syspro_order", result.SysproOrderNumber,
 	)

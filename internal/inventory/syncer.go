@@ -182,11 +182,18 @@ func (s *Syncer) computeEffective(ctx context.Context, stock map[string]float64)
 	}
 	quantities := make(map[string]int, len(stock))
 	for sku, sysproQty := range stock {
-		effective := int(math.Round(sysproQty)) - reserved[sku]
+		reservedQty := reserved[sku]
+		effective := int(math.Round(sysproQty)) - reservedQty
 		if effective < 0 {
 			effective = 0
 		}
 		quantities[sku] = effective
+		s.logger.Debug("stock level computed",
+			"sku", sku,
+			"syspro_qty", sysproQty,
+			"reserved_qty", reservedQty,
+			"effective_qty", effective,
+		)
 	}
 	return quantities
 }

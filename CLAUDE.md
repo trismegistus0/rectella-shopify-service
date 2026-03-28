@@ -16,7 +16,7 @@ Sebastian is building this service and learning Go, testing patterns, and produc
 
 Rectella (Burnley, Lancashire) manufactures BBQ/grilling products under the **Bar-Be-Quick** brand. B2C Shopify site integrating with SYSPRO ERP.
 
-- 13 simple stocked SKUs at launch
+- ~40 stocked SKUs at launch (confirmed by Clare, up from initial estimate of 13)
 - All orders post to single SYSPRO customer account `WEBS01`
 - Single warehouse (TBD), Shopify controls pricing in Phase 1
 
@@ -263,6 +263,10 @@ Key docs for this project:
 - Git default branch `master`, remote: `github.com/coldwinter1017/rectella-shopify-service` (private)
 - Docker `network_mode: host` required — Docker bridge port mapping broken on kernel 6.18+ with nftables
 
+## Linear
+
+This project is tracked as **Rectella** in the Dev team on Linear. See vault-level CLAUDE.md for full Linear workflow instructions.
+
 ## MCP Servers
 
 ```bash
@@ -272,4 +276,5 @@ claude mcp add shopify-dev -- npx -y @shopify/dev-mcp@latest
 # Installed as official plugins (stored in ~/.claude/settings.json):
 # context7@claude-plugins-official  — docs lookup (use mcp__plugin_context7_context7__* tools)
 # gopls-lsp@claude-plugins-official — Go LSP
+# linear — task management (HTTP MCP, OAuth)
 ```

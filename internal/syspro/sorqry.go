@@ -18,8 +18,8 @@ type SORQRYResult struct {
 }
 
 type sorqryRequest struct {
-	XMLName xml.Name    `xml:"Query"`
-	Key     sorqryKey   `xml:"Key"`
+	XMLName xml.Name     `xml:"Query"`
+	Key     sorqryKey    `xml:"Key"`
 	Option  sorqryOption `xml:"Option"`
 }
 
@@ -38,13 +38,13 @@ type sorqryOption struct {
 // sorqryResponse maps the flat <SorDetail> response from SYSPRO SORQRY.
 // Fields are directly under the root element, not nested.
 type sorqryResponse struct {
-	XMLName          xml.Name `xml:"SorDetail"`
-	SalesOrder       string   `xml:"SalesOrder"`
-	OrderStatus      string   `xml:"OrderStatus"`
-	OrderStatusDesc  string   `xml:"OrderStatusDesc"`
-	ShippingInstrs   string   `xml:"ShippingInstrs"`
-	ShippingInstrsCod string  `xml:"ShippingInstrsCod"`
-	LastInvoice      string   `xml:"LastInvoice"`
+	XMLName           xml.Name `xml:"SorDetail"`
+	SalesOrder        string   `xml:"SalesOrder"`
+	OrderStatus       string   `xml:"OrderStatus"`
+	OrderStatusDesc   string   `xml:"OrderStatusDesc"`
+	ShippingInstrs    string   `xml:"ShippingInstrs"`
+	ShippingInstrsCod string   `xml:"ShippingInstrsCod"`
+	LastInvoice       string   `xml:"LastInvoice"`
 }
 
 func buildSORQRY(orderNumber string) (string, error) {

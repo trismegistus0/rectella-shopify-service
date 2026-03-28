@@ -60,6 +60,7 @@ func (h *Handler) handleOrderCreate(w http.ResponseWriter, r *http.Request) {
 	// Verify HMAC signature.
 	signature := r.Header.Get("X-Shopify-Hmac-Sha256")
 	if !VerifyHMAC(body, h.secret, signature) {
+		h.logger.Warn("webhook HMAC verification failed", "remote_addr", r.RemoteAddr)
 		h.respond(w, http.StatusUnauthorized, "error", "unauthorized")
 		return
 	}
@@ -87,16 +88,19 @@ func (h *Handler) handleOrderCreate(w http.ResponseWriter, r *http.Request) {
 	// Parse payload.
 	var payload shopifyOrder
 	if err := json.Unmarshal(body, &payload); err != nil {
+		h.logger.Warn("malformed webhook payload", "error", err, "webhook_id", webhookID)
 		h.respond(w, http.StatusBadRequest, "error", "malformed JSON")
 		return
 	}
 
 	// Validate required fields.
 	if payload.ID == 0 {
+		h.logger.Warn("webhook missing order ID", "webhook_id", webhookID)
 		h.respond(w, http.StatusUnprocessableEntity, "error", "missing order ID")
 		return
 	}
 	if len(payload.LineItems) == 0 {
+		h.logger.Warn("webhook has no line items", "webhook_id", webhookID, "shopify_order_id", payload.ID)
 		h.respond(w, http.StatusUnprocessableEntity, "error", "no line items")
 		return
 	}
@@ -104,14 +108,17 @@ func (h *Handler) handleOrderCreate(w http.ResponseWriter, r *http.Request) {
 	// Validate line items.
 	for i, li := range payload.LineItems {
 		if li.SKU == "" {
+			h.logger.Warn("webhook line item missing SKU", "webhook_id", webhookID, "shopify_order_id", payload.ID, "line", i+1)
 			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: missing SKU", i+1))
 			return
 		}
 		if li.Quantity <= 0 {
+			h.logger.Warn("webhook line item invalid quantity", "webhook_id", webhookID, "shopify_order_id", payload.ID, "line", i+1, "quantity", li.Quantity)
 			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: invalid quantity", i+1))
 			return
 		}
 		if price, err := strconv.ParseFloat(li.Price, 64); err == nil && price < 0 {
+			h.logger.Warn("webhook line item negative price", "webhook_id", webhookID, "shopify_order_id", payload.ID, "line", i+1, "price", price)
 			h.respond(w, http.StatusUnprocessableEntity, "error", fmt.Sprintf("line item %d: negative price", i+1))
 			return
 		}

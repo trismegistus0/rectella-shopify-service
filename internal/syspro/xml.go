@@ -36,11 +36,11 @@ type sortoiHeader struct {
 	ShippingInstrs    string `xml:"ShippingInstrs,omitempty"`    // Carrier from Shopify shipping method
 	ShippingInstrsCod string `xml:"ShippingInstrsCod,omitempty"` // Carrier code if available
 	// Ship2 = delivery address from Shopify (not ShipAddress which is the customer default)
-	Ship2Address1  string `xml:"Ship2Address1,omitempty"`
-	Ship2Address2  string `xml:"Ship2Address2,omitempty"`
-	Ship2Address3  string `xml:"Ship2Address3,omitempty"` // City
-	Ship2Address4  string `xml:"Ship2Address4,omitempty"` // Province
-	Ship2Address5  string `xml:"Ship2Address5,omitempty"` // Country
+	Ship2Address1   string `xml:"Ship2Address1,omitempty"`
+	Ship2Address2   string `xml:"Ship2Address2,omitempty"`
+	Ship2Address3   string `xml:"Ship2Address3,omitempty"` // City
+	Ship2Address4   string `xml:"Ship2Address4,omitempty"` // Province
+	Ship2Address5   string `xml:"Ship2Address5,omitempty"` // Country
 	Ship2PostalCode string `xml:"Ship2PostalCode,omitempty"`
 }
 

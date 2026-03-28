@@ -44,7 +44,16 @@ func run() error {
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("starting rectella-shopify-service")
+	slog.Info("starting rectella-shopify-service",
+		"company", cfg.SysproCompanyID,
+		"warehouse", cfg.SysproWarehouse,
+		"skus", len(cfg.SysproSKUs),
+		"batch_interval", cfg.BatchInterval,
+		"stock_sync_interval", cfg.StockSyncInterval,
+		"port", cfg.Port,
+		"admin_auth", cfg.AdminToken != "",
+		"log_level", cfg.LogLevel.String(),
+	)
 
 	// Connect to database.
 	db, err := store.New(ctx, cfg.DatabaseURL)
@@ -141,6 +150,7 @@ func run() error {
 			if cfg.AdminToken != "" {
 				token := r.Header.Get("X-Admin-Token")
 				if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AdminToken)) != 1 {
+					slog.Warn("admin auth failed", "method", r.Method, "path", r.URL.Path)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
