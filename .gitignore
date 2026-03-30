@@ -5,6 +5,7 @@
 *.so
 *.dylib
 /rectella-shopify-service
+/pipeline-test
 
 # Test
 *.test
