@@ -19,7 +19,8 @@ func TestBuildSORTOI_ParamsXML(t *testing.T) {
 		"<Process>Import</Process>",
 		"<StatusInProcess>Y</StatusInProcess>",
 		"<ValidateOnly>N</ValidateOnly>",
-		"<IgnoreWarnings>Y</IgnoreWarnings>",
+		"<IgnoreWarnings>W</IgnoreWarnings>",
+		"<ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid>",
 		"<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>",
 		"<AllowZeroPrice>Y</AllowZeroPrice>",
 	} {

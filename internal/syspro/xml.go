@@ -10,13 +10,14 @@ import (
 // sortoiParams maps to the <SalesOrders><Parameters>...</Parameters></SalesOrders> XML
 // sent as XmlParameters on every SORTOI call.
 type sortoiParams struct {
-	XMLName         xml.Name `xml:"SalesOrders"`
-	Process         string   `xml:"Parameters>Process"`
-	StatusInProcess string   `xml:"Parameters>StatusInProcess"`
-	ValidateOnly    string   `xml:"Parameters>ValidateOnly"`
-	IgnoreWarnings  string   `xml:"Parameters>IgnoreWarnings"`
-	AlwaysUsePrice  string   `xml:"Parameters>AlwaysUsePriceEntered"`
-	AllowZeroPrice  string   `xml:"Parameters>AllowZeroPrice"`
+	XMLName                    xml.Name `xml:"SalesOrders"`
+	Process                    string   `xml:"Parameters>Process"`
+	StatusInProcess            string   `xml:"Parameters>StatusInProcess"`
+	ValidateOnly               string   `xml:"Parameters>ValidateOnly"`
+	IgnoreWarnings             string   `xml:"Parameters>IgnoreWarnings"`
+	ApplyIfEntireDocumentValid string   `xml:"Parameters>ApplyIfEntireDocumentValid"`
+	AlwaysUsePrice             string   `xml:"Parameters>AlwaysUsePriceEntered"`
+	AllowZeroPrice             string   `xml:"Parameters>AllowZeroPrice"`
 }
 
 // sortoiDocument maps to the <SalesOrders><Orders>...</Orders></SalesOrders> XML
@@ -66,12 +67,13 @@ type sortoiStockLine struct {
 // Returns (paramsXML, dataXML, error).
 func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, error) {
 	params := sortoiParams{
-		Process:         "Import",
-		StatusInProcess: "Y",
-		ValidateOnly:    "N",
-		IgnoreWarnings:  "Y",
-		AlwaysUsePrice:  "Y",
-		AllowZeroPrice:  "Y",
+		Process:                    "Import",
+		StatusInProcess:            "Y",
+		ValidateOnly:               "N",
+		IgnoreWarnings:             "W",
+		ApplyIfEntireDocumentValid: "Y",
+		AlwaysUsePrice:             "Y",
+		AllowZeroPrice:             "Y",
 	}
 	paramsBytes, err := xml.Marshal(params)
 	if err != nil {
