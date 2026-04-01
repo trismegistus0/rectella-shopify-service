@@ -6,6 +6,9 @@
 *.dylib
 /rectella-shopify-service
 /pipeline-test
+/benchmark
+/enettest
+/sorqrytest
 
 # Test
 *.test
@@ -28,9 +31,34 @@ scripts/run-history/
 *.swo
 *~
 
-# Local network reference (contains internal IPs, not for repo)
-docs/network-setup.md
+# Claude Code / AI tooling
+.claude/
+.mcp.json
+.mise.toml
+.playwright-mcp/
 
 # PromptFoo — local dev tool, not committed
 promptfoo.yaml
 .promptfoo/
+
+# Internal docs — emails, proposals, proprietary, internal comms
+docs/network-setup.md
+docs/email-*.md
+docs/Discussion Points for Sarah.md
+docs/Sarah-Latest*.md
+docs/proposal-azure-hosting.*
+docs/proposal-screenshot-*.png
+docs/SYSPRO 8 UK Live Install Guide.docx
+docs/Trade Promotions Training Guide - SYSPRO 8.pdf
+
+# Internal diagrams, screenshots, reports, plans
+docs/clare-*
+docs/playground-*
+docs/diagram-*.png
+docs/diagrams.html
+docs/diagrams-full.png
+docs/reports/
+docs/superpowers/
+
+# Misc local files
+history.txt

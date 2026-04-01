@@ -32,20 +32,20 @@ type sortoiOrder struct {
 }
 
 type sortoiHeader struct {
-	CustomerPoNumber string `xml:"CustomerPoNumber"`
-	OrderActionType  string `xml:"OrderActionType"`
-	Customer         string `xml:"Customer"`
-	OrderDate        string `xml:"OrderDate"` // YYYY-MM-DD
+	CustomerPoNumber  string `xml:"CustomerPoNumber"`
+	OrderActionType   string `xml:"OrderActionType"`
+	Customer          string `xml:"Customer"`
+	OrderDate         string `xml:"OrderDate"` // YYYY-MM-DD
 	Email             string `xml:"Email,omitempty"`
 	ShippingInstrs    string `xml:"ShippingInstrs,omitempty"`    // Carrier from Shopify shipping method
 	ShippingInstrsCod string `xml:"ShippingInstrsCod,omitempty"` // Carrier code if available
-	// Ship2 = delivery address from Shopify (not ShipAddress which is the customer default)
-	Ship2Address1   string `xml:"Ship2Address1,omitempty"`
-	Ship2Address2   string `xml:"Ship2Address2,omitempty"`
-	Ship2Address3   string `xml:"Ship2Address3,omitempty"` // City
-	Ship2Address4   string `xml:"Ship2Address4,omitempty"` // Province
-	Ship2Address5   string `xml:"Ship2Address5,omitempty"` // Country
-	Ship2PostalCode string `xml:"Ship2PostalCode,omitempty"`
+	// Ship-to address from Shopify (overrides customer default when populated)
+	ShipAddress1   string `xml:"ShipAddress1,omitempty"`
+	ShipAddress2   string `xml:"ShipAddress2,omitempty"`
+	ShipAddress3   string `xml:"ShipAddress3,omitempty"` // City
+	ShipAddress4   string `xml:"ShipAddress4,omitempty"` // Province
+	ShipAddress5   string `xml:"ShipAddress5,omitempty"` // Country
+	ShipPostalCode string `xml:"ShipPostalCode,omitempty"`
 }
 
 type sortoiDetail struct {
@@ -53,9 +53,9 @@ type sortoiDetail struct {
 }
 
 type sortoiStockLine struct {
-	CustomerPoLine string `xml:"CustomerPoLine"`
-	LineActionType string `xml:"LineActionType"`
-	StockCode      string `xml:"StockCode"`
+	CustomerPoLine string  `xml:"CustomerPoLine"`
+	LineActionType string  `xml:"LineActionType"`
+	StockCode      string  `xml:"StockCode"`
 	OrderQty       int     `xml:"OrderQty"`
 	OrderUom       string  `xml:"OrderUom"`
 	Price          float64 `xml:"Price"`
@@ -104,12 +104,12 @@ func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, er
 				Customer:         order.CustomerAccount,
 				OrderDate:        order.OrderDate.Format("2006-01-02"),
 				Email:            order.ShipEmail,
-				Ship2Address1:    order.ShipAddress1,
-				Ship2Address2:    order.ShipAddress2,
-				Ship2Address3:    order.ShipCity,
-				Ship2Address4:    order.ShipProvince,
-				Ship2Address5:    order.ShipCountry,
-				Ship2PostalCode:  order.ShipPostcode,
+				ShipAddress1:     order.ShipAddress1,
+				ShipAddress2:     order.ShipAddress2,
+				ShipAddress3:     order.ShipCity,
+				ShipAddress4:     order.ShipProvince,
+				ShipAddress5:     order.ShipCountry,
+				ShipPostalCode:   order.ShipPostcode,
 			},
 			Details: sortoiDetail{Lines: stockLines},
 		},

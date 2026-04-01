@@ -54,12 +54,12 @@ func TestBuildSORTOI_DataXML_HeaderFields(t *testing.T) {
 		"Customer":         "<Customer>WEBS01</Customer>",
 		"OrderDate":        "<OrderDate>2026-02-24</OrderDate>",
 		"Email":            "<Email>john@example.com</Email>",
-		"Ship2Address1":    "<Ship2Address1>42 Bancroft Road</Ship2Address1>",
-		"Ship2Address2":    "<Ship2Address2>Burnley</Ship2Address2>",
-		"Ship2Address3":    "<Ship2Address3>Lancashire</Ship2Address3>",
-		"Ship2Address4":    "<Ship2Address4>England</Ship2Address4>",
-		"Ship2Address5":    "<Ship2Address5>UK</Ship2Address5>",
-		"Ship2PostalCode":  "<Ship2PostalCode>BB10 2TP</Ship2PostalCode>",
+		"ShipAddress1":     "<ShipAddress1>42 Bancroft Road</ShipAddress1>",
+		"ShipAddress2":     "<ShipAddress2>Burnley</ShipAddress2>",
+		"ShipAddress3":     "<ShipAddress3>Lancashire</ShipAddress3>",
+		"ShipAddress4":     "<ShipAddress4>England</ShipAddress4>",
+		"ShipAddress5":     "<ShipAddress5>UK</ShipAddress5>",
+		"ShipPostalCode":   "<ShipPostalCode>BB10 2TP</ShipPostalCode>",
 	}
 	for field, want := range checks {
 		if !strings.Contains(dataXML, want) {
@@ -107,7 +107,7 @@ func TestBuildSORTOI_EmptyAddressOmitted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, absent := range []string{"Ship2Address1", "Ship2Address2", "Ship2Address3", "Email"} {
+	for _, absent := range []string{"ShipAddress1", "ShipAddress2", "ShipAddress3", "Email"} {
 		if strings.Contains(dataXML, "<"+absent+">") {
 			t.Errorf("data XML should omit empty field <%s>; got: %s", absent, dataXML)
 		}
