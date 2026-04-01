@@ -43,7 +43,7 @@ type sortoiResponse struct {
 	CustomerPoNumber string   `xml:"Order>CustomerPoNumber"`
 	ValidationStatus string   `xml:"ValidationStatus>Status"`
 	ItemsProcessed   string   `xml:"StatusOfItems>ItemsProcessed"`
-	ItemsInvalid     string   `xml:"StatusOfItems>ItemsInvalid"`
+	ItemsInvalid     string   `xml:"StatusOfItems>ItemsRejectedWithWarnings"`
 }
 
 // EnetClient is the real implementation that talks to SYSPRO e.net REST.
