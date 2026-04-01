@@ -59,6 +59,9 @@ gofmt -l .
 ```
 cmd/server/main.go                  # Entrypoint: config, DB, migrations, HTTP server
 cmd/enettest/main.go                # SYSPRO e.net connectivity test (logon/logoff cycle)
+cmd/sortoitest/main.go              # SORTOI test tool — submit test order to SYSPRO, dump raw response
+cmd/sorqrytest/main.go              # SORQRY/INVQRY test tool — query order/stock, dump raw response
+cmd/pipeline-test/                   # Visual pipeline test (mock SYSPRO mode)
 internal/
   batch/
     processor.go                    # Batch processor: polling loop, SYSPRO submission, error handling
@@ -119,7 +122,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
 - **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
 - **Health endpoints**: `GET /health` (DB ping, no error leak), `GET /ready`
-- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `EnetClient` (GET-based logon/transaction/query/logoff on port 31002), SORTOI XML builder with net price calculation, INVQRY XML builder + response parser + `QueryStock()`, Windows-1252 response handling; verified end-to-end against SYSPRO test company `RILT`
+- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `EnetClient` (GET-based logon/transaction/query/logoff on port 31002), SORTOI XML builder with net price calculation + atomicity (`ApplyIfEntireDocumentValid`), INVQRY XML builder + response parser + `QueryStock()`, SORQRY dispatch status query, Windows-1252 response handling, session mutex for single-operator concurrency; verified end-to-end against SYSPRO test company `RILT` (orders 015562–015566)
 - **VPN tooling** (`scripts/`): `vpn.sh` (connect/disconnect/test with Mullvad coexistence), `vpn-monitor.sh` (self-healing health monitor), DNS routing fix, managed `/etc/hosts` entries for RIL-APP01/RIL-DB01
 - **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
 - **Duplicate prevention**: Atomic `pending → processing` status transition before SYSPRO call + `syspro_order_number` stored on success for reconciliation
@@ -158,6 +161,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules. Keep it accurate enough to onboard a new developer.
 - **Stock sync design**: SYSPRO `INVQRY` (one call per SKU, `QtyAvailable` field) → Shopify GraphQL `inventorySetQuantities` (batch all SKUs in one mutation). Polls every 15m. Order-aware: subtracts pending/processing order quantities from SYSPRO values before pushing. Triggered sync on webhook receipt for near-instant updates. Never zeros Shopify on SYSPRO failure. Clamps negatives to 0. Single-flight guard.
 - **Pricing**: Shopify owns all deals/discounts. Net prices sent to SYSPRO via `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`.
+- **Session mutex**: SYSPRO allows only one session per operator (second logon kills the first). All SYSPRO callers (batch processor, stock syncer, fulfilment syncer) share one `EnetClient` with a `sessionMu` mutex serialising logon-logoff lifecycles. Never create a second `EnetClient` with the same operator.
 
 ## Data Mapping — Shopify to SYSPRO
 
@@ -254,14 +258,18 @@ Key docs for this project:
 
 - Stocked lines: `<StockLine>` with `<StockCode>`, `<OrderQty>`, `<Price>`
 - Non-stocked lines: `<NonStockedLine>` with `<NStockCode>`, `<NStockDes>`, `<NOrderQty>`, `<NPrice>`, `<NProductClass>`
-- Parameters: `<SalesOrders><Parameters>` with `<IgnoreWarnings>`, `<AlwaysUsePriceEntered>`, `<AllowZeroPrice>`
+- Parameters: `<Process>Import</Process>`, `<StatusInProcess>Y</StatusInProcess>`, `<ValidateOnly>N</ValidateOnly>`, `<IgnoreWarnings>W</IgnoreWarnings>` (W = continue + return warnings; Y suppresses entirely), `<ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid>` (atomicity — prevents partial orders), `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`, `<AllowZeroPrice>Y</AllowZeroPrice>`
+- Ship-to address: `<ShipAddress1>` through `<ShipAddress5>` + `<ShipPostalCode>` (NOT `Ship2Address` — SYSPRO silently ignores unknown elements)
+- SORTOI Import response: clean success (no warnings) returns only `<StatusOfItems>` with no `<Order>` block. Success with warnings returns `<Order><SalesOrder>XXXXXX</SalesOrder></Order>`. Failure returns `<Order><SalesOrder/></Order>` (empty).
 - Session GUID from `/Logon` must be supplied as `UserId` on every `/Transaction` call
 
 ## Environment Notes
 
 - Arch Linux (Omarchy) + Hyprland
-- Git default branch `master`, remote: `github.com/coldwinter1017/rectella-shopify-service` (private)
+- Git default branch `master`, remote: `github.com/trismegistus0/rectella-shopify-service`
 - Docker `network_mode: host` required — Docker bridge port mapping broken on kernel 6.18+ with nftables
+- SearXNG runs on port 8080 on dev machine — use `PORT=9080` for the service locally
+- Git remote: `github.com/trismegistus0/rectella-shopify-service` (public — .gitignore hardened)
 
 ## Linear
 
