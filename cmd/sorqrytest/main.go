@@ -69,7 +69,7 @@ func run() error {
 	}()
 
 	// Step 2: Query SORQRY
-	xmlIn := fmt.Sprintf(`<Query><Key><SalesOrderNumber>%s</SalesOrderNumber></Key><Option><IncludeStockedLines>N</IncludeStockedLines><IncludeNonStockedLines>N</IncludeNonStockedLines><IncludeFreightLines>N</IncludeFreightLines><IncludeMiscLines>N</IncludeMiscLines><IncludeCommentLines>N</IncludeCommentLines></Option></Query>`, orderNumber)
+	xmlIn := fmt.Sprintf(`<Query><Key><SalesOrder>%s</SalesOrder></Key><Option><IncludeStockedLines>N</IncludeStockedLines><IncludeNonStockedLines>N</IncludeNonStockedLines><IncludeFreightLines>N</IncludeFreightLines><IncludeMiscLines>N</IncludeMiscLines><IncludeCommentLines>N</IncludeCommentLines></Option></Query>`, orderNumber)
 
 	fmt.Printf("\nSORQRY request:\n%s\n\n", xmlIn)
 	fmt.Print("Querying SORQRY... ")
