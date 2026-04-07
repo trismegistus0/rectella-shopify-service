@@ -50,7 +50,13 @@ type sortoiHeader struct {
 }
 
 type sortoiDetail struct {
-	Lines []sortoiStockLine `xml:"StockLine"`
+	Lines       []sortoiStockLine  `xml:"StockLine"`
+	FreightLine *sortoiFreightLine `xml:"FreightLine,omitempty"`
+}
+
+type sortoiFreightLine struct {
+	FreightValue float64 `xml:"FreightValue"`
+	FreightCost  float64 `xml:"FreightCost"`
 }
 
 type sortoiStockLine struct {
@@ -98,6 +104,14 @@ func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, er
 		}
 	}
 
+	details := sortoiDetail{Lines: stockLines}
+	if order.ShippingAmount > 0 {
+		details.FreightLine = &sortoiFreightLine{
+			FreightValue: order.ShippingAmount,
+			FreightCost:  order.ShippingAmount,
+		}
+	}
+
 	doc := sortoiDocument{
 		Orders: sortoiOrder{
 			Header: sortoiHeader{
@@ -113,7 +127,7 @@ func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, er
 				ShipAddress5:     order.ShipCountry,
 				ShipPostalCode:   order.ShipPostcode,
 			},
-			Details: sortoiDetail{Lines: stockLines},
+			Details: details,
 		},
 	}
 	dataBytes, err := xml.Marshal(doc)

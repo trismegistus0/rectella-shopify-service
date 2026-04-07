@@ -213,6 +213,13 @@ func mapOrder(p shopifyOrder, rawPayload []byte) (model.Order, []model.OrderLine
 		order.ShipPhone = a.Phone
 	}
 
+	// Shipping amount (sum of all shipping lines).
+	for _, sl := range p.ShippingLines {
+		if v, err := strconv.ParseFloat(sl.Price, 64); err == nil {
+			order.ShippingAmount += v
+		}
+	}
+
 	// Line items.
 	lines := make([]model.OrderLine, 0, len(p.LineItems))
 	for _, li := range p.LineItems {

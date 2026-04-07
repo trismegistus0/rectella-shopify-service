@@ -257,6 +257,33 @@ func TestHandleOrderCreate(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name: "order with shipping lines",
+			body: `{
+				"id": 5551234567891,
+				"name": "#BBQ1010",
+				"email": "test@example.com",
+				"created_at": "2026-02-24T14:30:00Z",
+				"total_price": "604.99",
+				"gateway": "shopify_payments",
+				"line_items": [
+					{"sku": "CBBQ0001", "quantity": 1, "price": "599.00", "total_discount": "0.00", "tax_lines": []}
+				],
+				"shipping_lines": [
+					{"title": "Standard Shipping", "price": "5.99"}
+				]
+			}`,
+			webhookID:      "wh-012",
+			signBody:       true,
+			store:          &mockStore{},
+			wantStatus:     http.StatusOK,
+			wantCreateCall: true,
+			checkOrder: func(t *testing.T, order model.Order, lines []model.OrderLine) {
+				if order.ShippingAmount != 5.99 {
+					t.Errorf("ShippingAmount = %f, want 5.99", order.ShippingAmount)
+				}
+			},
+		},
+		{
 			name:           "nil shipping address",
 			body:           noAddressPayload,
 			webhookID:      "wh-010",

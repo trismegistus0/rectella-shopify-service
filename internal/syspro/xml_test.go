@@ -170,6 +170,43 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 	}
 }
 
+func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
+	order := minimalOrder()
+	order.ShippingAmount = 5.99
+	lines := []model.OrderLine{
+		{SKU: "CBBQ0001", Quantity: 1, UnitPrice: 599.00},
+	}
+
+	_, dataXML, err := buildSORTOI(order, lines)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, want := range []string{
+		"<FreightLine>",
+		"<FreightValue>5.99</FreightValue>",
+		"<FreightCost>5.99</FreightCost>",
+		"</FreightLine>",
+	} {
+		if !strings.Contains(dataXML, want) {
+			t.Errorf("data XML missing %q\ngot: %s", want, dataXML)
+		}
+	}
+}
+
+func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
+	order := minimalOrder()
+	// ShippingAmount is zero (default)
+	_, dataXML, err := buildSORTOI(order, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(dataXML, "FreightLine") {
+		t.Errorf("data XML should not contain FreightLine when shipping is zero; got: %s", dataXML)
+	}
+}
+
 // minimalOrder returns an Order with only the mandatory fields set.
 func minimalOrder() model.Order {
 	return model.Order{

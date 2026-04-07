@@ -56,21 +56,21 @@ func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order m
 			ship_first_name, ship_last_name, ship_address1, ship_address2,
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
-			payment_reference, payment_amount,
+			payment_reference, payment_amount, shipping_amount,
 			raw_payload, order_date
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7, $8,
 			$9, $10, $11, $12,
 			$13, $14,
-			$15, $16,
-			$17, $18
+			$15, $16, $17,
+			$18, $19
 		) RETURNING id`,
 		order.ShopifyOrderID, order.OrderNumber, order.Status, order.CustomerAccount,
 		order.ShipFirstName, order.ShipLastName, order.ShipAddress1, order.ShipAddress2,
 		order.ShipCity, order.ShipProvince, order.ShipPostcode, order.ShipCountry,
 		order.ShipPhone, order.ShipEmail,
-		order.PaymentReference, order.PaymentAmount,
+		order.PaymentReference, order.PaymentAmount, order.ShippingAmount,
 		order.RawPayload, order.OrderDate,
 	).Scan(&orderID)
 	if err != nil {
@@ -161,7 +161,7 @@ func (db *DB) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderW
 			ship_first_name, ship_last_name, ship_address1, ship_address2,
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
-			payment_reference, payment_amount,
+			payment_reference, payment_amount, shipping_amount,
 			raw_payload, syspro_order_number, attempts, last_error,
 			order_date, created_at, updated_at,
 			fulfilled_at, shopify_fulfillment_id
@@ -183,7 +183,7 @@ func (db *DB) FetchPendingOrders(ctx context.Context, limit int) ([]model.OrderW
 			&o.ShipFirstName, &o.ShipLastName, &o.ShipAddress1, &o.ShipAddress2,
 			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
 			&o.ShipPhone, &o.ShipEmail,
-			&o.PaymentReference, &o.PaymentAmount,
+			&o.PaymentReference, &o.PaymentAmount, &o.ShippingAmount,
 			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
 			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
 			&o.FulfilledAt, &o.ShopifyFulfilmentID,
@@ -255,7 +255,7 @@ func (db *DB) ListOrdersByStatus(ctx context.Context, status model.OrderStatus) 
 			ship_first_name, ship_last_name, ship_address1, ship_address2,
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
-			payment_reference, payment_amount,
+			payment_reference, payment_amount, shipping_amount,
 			raw_payload, syspro_order_number, attempts, last_error,
 			order_date, created_at, updated_at,
 			fulfilled_at, shopify_fulfillment_id
@@ -276,7 +276,7 @@ func (db *DB) ListOrdersByStatus(ctx context.Context, status model.OrderStatus) 
 			&o.ShipFirstName, &o.ShipLastName, &o.ShipAddress1, &o.ShipAddress2,
 			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
 			&o.ShipPhone, &o.ShipEmail,
-			&o.PaymentReference, &o.PaymentAmount,
+			&o.PaymentReference, &o.PaymentAmount, &o.ShippingAmount,
 			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
 			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
 			&o.FulfilledAt, &o.ShopifyFulfilmentID,
@@ -296,7 +296,7 @@ func (db *DB) FetchSubmittedOrders(ctx context.Context) ([]model.Order, error) {
 			ship_first_name, ship_last_name, ship_address1, ship_address2,
 			ship_city, ship_province, ship_postcode, ship_country,
 			ship_phone, ship_email,
-			payment_reference, payment_amount,
+			payment_reference, payment_amount, shipping_amount,
 			raw_payload, syspro_order_number, attempts, last_error,
 			order_date, created_at, updated_at,
 			fulfilled_at, shopify_fulfillment_id
@@ -319,7 +319,7 @@ func (db *DB) FetchSubmittedOrders(ctx context.Context) ([]model.Order, error) {
 			&o.ShipFirstName, &o.ShipLastName, &o.ShipAddress1, &o.ShipAddress2,
 			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
 			&o.ShipPhone, &o.ShipEmail,
-			&o.PaymentReference, &o.PaymentAmount,
+			&o.PaymentReference, &o.PaymentAmount, &o.ShippingAmount,
 			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
 			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
 			&o.FulfilledAt, &o.ShopifyFulfilmentID,

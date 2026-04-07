@@ -37,6 +37,9 @@ type Order struct {
 	PaymentReference string
 	PaymentAmount    float64
 
+	// Shipping
+	ShippingAmount float64
+
 	// Raw webhook payload
 	RawPayload []byte
 
