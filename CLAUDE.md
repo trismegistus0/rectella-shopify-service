@@ -16,7 +16,7 @@ Sebastian is building this service and learning Go, testing patterns, and produc
 
 Rectella (Burnley, Lancashire) manufactures BBQ/grilling products under the **Bar-Be-Quick** brand. B2C Shopify site integrating with SYSPRO ERP.
 
-- 13 simple stocked SKUs at launch
+- ~40 stocked SKUs at launch (confirmed by Clare, up from initial estimate of 13)
 - All orders post to single SYSPRO customer account `WEBS01`
 - Single warehouse (TBD), Shopify controls pricing in Phase 1
 
@@ -59,6 +59,9 @@ gofmt -l .
 ```
 cmd/server/main.go                  # Entrypoint: config, DB, migrations, HTTP server
 cmd/enettest/main.go                # SYSPRO e.net connectivity test (logon/logoff cycle)
+cmd/sortoitest/main.go              # SORTOI test tool — submit test order to SYSPRO, dump raw response
+cmd/sorqrytest/main.go              # SORQRY/INVQRY test tool — query order/stock, dump raw response
+cmd/pipeline-test/                   # Visual pipeline test (mock SYSPRO mode)
 internal/
   batch/
     processor.go                    # Batch processor: polling loop, SYSPRO submission, error handling
@@ -67,19 +70,31 @@ internal/
   store/
     store.go                        # DB connection pool (pgxpool)
     migrate.go                      # Embedded SQL migrations
-    order.go                        # WebhookExists, CreateOrder, FetchPendingOrders, UpdateOrderStatus, ListOrdersByStatus
+    order.go                        # WebhookExists, CreateOrder, FetchPendingOrders, UpdateOrderStatus, ListOrdersByStatus, FetchReservedQuantities
     migrations/
       001_initial_schema.up.sql     # webhook_events, orders, order_lines tables
       001_initial_schema.down.sql   # Drop tables
   syspro/
-    client.go                       # Client interface + enetClient (logon/transaction/logoff)
+    client.go                       # Client interface + EnetClient (logon/transaction/query/logoff)
     session.go                      # Session interface + enetSession (batched order submission)
+    inventory.go                    # INVQRY XML builder + response parser + QueryStock()
     xml.go                          # SORTOI XML builder (sortoiParams, sortoiDocument)
-    client_test.go                  # httptest-based client tests
+    client_test.go                  # httptest-based client tests (incl. /Query/Query)
+    inventory_test.go               # INVQRY XML + QueryStock tests
     session_test.go                 # Session lifecycle tests (open/submit/reuse/close)
     xml_test.go                     # XML builder unit tests
+  inventory/
+    syncer.go                       # Stock sync orchestrator: polling, debounce, order-aware adjustments
+    shopify.go                      # Shopify GraphQL client: location/SKU discovery, SetInventoryLevels
+    syncer_test.go                  # 10 syncer unit tests (mock querier/pusher/store)
+    shopify_test.go                 # 7 Shopify client httptest tests
+  fulfilment/
+    syncer.go                       # Fulfilment sync: polls SORQRY, creates Shopify fulfilments
+    shopify.go                      # Shopify GraphQL client: GetFulfillmentOrderID, CreateFulfillment
+    syncer_test.go                  # 11 syncer unit tests (mock querier/pusher/store)
+    shopify_test.go                 # 8 Shopify fulfilment client httptest tests
   webhook/
-    handler.go                      # POST /webhooks/orders/create — OrderStore interface
+    handler.go                      # POST /webhooks/orders/create — OrderStore interface + stock sync trigger
     payload.go                      # Unexported Shopify JSON DTOs
     verify.go                       # HMAC-SHA256 verification
     handler_test.go                 # 11 table-driven handler tests (mock store)
@@ -112,7 +127,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
 - **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
 - **Health endpoints**: `GET /health` (DB ping, no error leak), `GET /ready`
-- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `enetClient` (logon/transaction/logoff), SORTOI XML builder; 13 tests
+- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `EnetClient` (GET-based logon/transaction/query/logoff on port 31002), SORTOI XML builder with net price calculation + atomicity (`ApplyIfEntireDocumentValid`), INVQRY XML builder + response parser + `QueryStock()`, SORQRY dispatch status query, Windows-1252 response handling, session mutex for single-operator concurrency; verified end-to-end against SYSPRO test company `RILT` (orders 015562–015566)
 - **VPN tooling** (`scripts/`): `vpn.sh` (connect/disconnect/test with Mullvad coexistence), `vpn-monitor.sh` (self-healing health monitor), DNS routing fix, managed `/etc/hosts` entries for RIL-APP01/RIL-DB01
 - **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
 - **Duplicate prevention**: Atomic `pending → processing` status transition before SYSPRO call + `syspro_order_number` stored on success for reconciliation
@@ -120,13 +135,15 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **POST /orders/{id}/retry** endpoint: Re-queue failed/dead-lettered orders (admin-token protected)
 - **Middleware**: Panic recovery, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`), request logging (method, path, status, duration, webhook_id)
 - **Dockerfile**: Multi-stage Go build, non-root user, Alpine-based
-- **Tests**: 43 unit tests (webhook handler + HMAC + SYSPRO client + XML builder + session + batch processor) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
+- **Stock sync** (`internal/inventory/`): One-way SYSPRO → Shopify inventory sync. Polls SYSPRO INVQRY every 15m, subtracts pending/processing order quantities, clamps to 0, pushes via Shopify GraphQL `inventorySetQuantities`. Webhook-triggered 2-second debounced sync for near-instant updates. Lazy Shopify location/SKU discovery with caching. Single-flight guard, 3-minute per-cycle timeout, 10-second per-query timeout, consecutive failure tracking, graceful shutdown. Disabled gracefully if `SYSPRO_SKUS` unconfigured.
+- **Fulfilment sync** (`internal/fulfilment/`): Polls SYSPRO SORQRY every 30m for submitted orders with status "9" (complete). Creates Shopify fulfilments via GraphQL `fulfillmentCreate` mutation with tracking info (carrier from SYSPRO `ShippingInstrs`). Updates order status to `fulfilled` with Shopify fulfilment GID. Handles already-fulfilled idempotently. Single-flight guard, 3-minute per-cycle timeout, graceful 10s drain on shutdown. Disabled if `SHOPIFY_ACCESS_TOKEN` missing.
+- **Shipping/freight**: Parses `shipping_lines` from Shopify webhooks, sums into `shipping_amount` on the order. SORTOI XML builder emits `<FreightLine>` with `<FreightValue>` and `<FreightCost>` when shipping > 0. Zero shipping = no freight line emitted.
+- **Tests**: 99 unit tests (webhook handler + HMAC + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
+- **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation
 
 ### Not Yet Built
 
 - Gift card handling (non-stocked lines in SORTOI — pending Liz Buckley finance approval)
-- Stock sync (SYSPRO e.net Query → Shopify inventory API)
-- Shipment/fulfilment feedback
 - Order cancellation handler
 
 ## Tech Stack
@@ -134,7 +151,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Go 1.26.0** (mise, `~/Work/.mise.toml`)
 - **PostgreSQL 16** (Docker, network_mode: host)
 - **pgx/v5** — only external dependency
-- **SYSPRO 8**: e.net NetTcp:31001 (read/write) + REST:40000 (read) on `RIL-APP01`
+- **SYSPRO 8**: e.net REST on port 31002 (`http://192.168.3.150:31002/SYSPROWCFService/Rest`), GET-based API, company `RILT` (test)
 - **Shopify**: Admin API + webhooks
 
 ## Key Design Rules
@@ -148,6 +165,9 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Idempotency**: Deduplicate on `X-Shopify-Webhook-Id`.
 - **Graceful shutdown**: Drain in-flight requests before stopping.
 - **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules. Keep it accurate enough to onboard a new developer.
+- **Stock sync design**: SYSPRO `INVQRY` (one call per SKU, `QtyAvailable` field) → Shopify GraphQL `inventorySetQuantities` (batch all SKUs in one mutation). Polls every 15m. Order-aware: subtracts pending/processing order quantities from SYSPRO values before pushing. Triggered sync on webhook receipt for near-instant updates. Never zeros Shopify on SYSPRO failure. Clamps negatives to 0. Single-flight guard.
+- **Pricing**: Shopify owns all deals/discounts. Net prices sent to SYSPRO via `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`.
+- **Session mutex**: SYSPRO allows only one session per operator (second logon kills the first). All SYSPRO callers (batch processor, stock syncer, fulfilment syncer) share one `EnetClient` with a `sessionMu` mutex serialising logon-logoff lifecycles. Never create a second `EnetClient` with the same operator.
 
 ## Data Mapping — Shopify to SYSPRO
 
@@ -178,8 +198,13 @@ SYSPRO_COMPANY_ID         # SYSPRO company ID
 DATABASE_URL              # PostgreSQL connection string
 PORT                      # HTTP listen port (default 8080)
 ADMIN_TOKEN               # Shared secret for /orders and /orders/{id}/retry (optional, open if unset)
+SHOPIFY_ACCESS_TOKEN      # shpat_... from custom app (required for stock sync)
+SHOPIFY_LOCATION_ID       # Shopify location GID (optional, auto-discovered if unset)
+SYSPRO_WAREHOUSE          # Warehouse code, e.g. "WH01" (required for stock sync)
+SYSPRO_SKUS               # Comma-separated SKUs, e.g. "CBBQ0001,CBBQ0002" (required for stock sync)
 STOCK_SYNC_INTERVAL       # Default 15m
 BATCH_INTERVAL            # Default 5m
+FULFILMENT_SYNC_INTERVAL  # Default 30m
 LOG_LEVEL                 # debug/info/warn/error
 
 # Operator-only (not consumed by service, documented for setup)
@@ -240,14 +265,22 @@ Key docs for this project:
 
 - Stocked lines: `<StockLine>` with `<StockCode>`, `<OrderQty>`, `<Price>`
 - Non-stocked lines: `<NonStockedLine>` with `<NStockCode>`, `<NStockDes>`, `<NOrderQty>`, `<NPrice>`, `<NProductClass>`
-- Parameters: `<SalesOrders><Parameters>` with `<IgnoreWarnings>`, `<AlwaysUsePriceEntered>`, `<AllowZeroPrice>`
+- Parameters: `<Process>Import</Process>`, `<StatusInProcess>Y</StatusInProcess>`, `<ValidateOnly>N</ValidateOnly>`, `<IgnoreWarnings>W</IgnoreWarnings>` (W = continue + return warnings; Y suppresses entirely), `<ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid>` (atomicity — prevents partial orders), `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`, `<AllowZeroPrice>Y</AllowZeroPrice>`
+- Ship-to address: `<ShipAddress1>` through `<ShipAddress5>` + `<ShipPostalCode>` (NOT `Ship2Address` — SYSPRO silently ignores unknown elements)
+- SORTOI Import response: clean success (no warnings) returns only `<StatusOfItems>` with no `<Order>` block. Success with warnings returns `<Order><SalesOrder>XXXXXX</SalesOrder></Order>`. Failure returns `<Order><SalesOrder/></Order>` (empty).
 - Session GUID from `/Logon` must be supplied as `UserId` on every `/Transaction` call
 
 ## Environment Notes
 
 - Arch Linux (Omarchy) + Hyprland
-- Git default branch `master`, remote: `github.com/coldwinter1017/rectella-shopify-service` (private)
+- Git default branch `master`, remote: `github.com/trismegistus0/rectella-shopify-service`
 - Docker `network_mode: host` required — Docker bridge port mapping broken on kernel 6.18+ with nftables
+- SearXNG runs on port 8080 on dev machine — use `PORT=9080` for the service locally
+- Git remote: `github.com/trismegistus0/rectella-shopify-service` (public — .gitignore hardened)
+
+## Linear
+
+This project is tracked as **Rectella** in the Dev team on Linear. See vault-level CLAUDE.md for full Linear workflow instructions.
 
 ## MCP Servers
 
@@ -258,4 +291,5 @@ claude mcp add shopify-dev -- npx -y @shopify/dev-mcp@latest
 # Installed as official plugins (stored in ~/.claude/settings.json):
 # context7@claude-plugins-official  — docs lookup (use mcp__plugin_context7_context7__* tools)
 # gopls-lsp@claude-plugins-official — Go LSP
+# linear — task management (HTTP MCP, OAuth)
 ```

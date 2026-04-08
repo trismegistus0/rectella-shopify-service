@@ -1,0 +1,55 @@
+CLARE MEETING — SHOPIFY
+========================
+
+HOW IT WORKS (simple version)
+
+  Customer buys on Shopify
+       |
+  Our service grabs the order automatically
+       |
+  Sends it into SYSPRO
+
+  Clare = Shopify side
+  Us    = everything else
+
+
+
+5 THINGS WE NEED
+-----------------
+
+  1. SHOPIFY APP created (gives us API keys)
+     - Needs permissions: Orders (read) + Inventory (read/write)
+     - We need the access token (starts with shpat_...)
+  2. WEBHOOK set up (tells our service when an order comes in)
+  3. SKUs MATCH between Shopify and SYSPRO — exact match, all 13
+  4. DEALS just set up normally in Shopify — we handle the rest
+  5. PRODUCT SETTINGS for stock sync:
+     - "Track inventory" = ON (all 13 products)
+     - "Continue selling when out of stock" = OFF
+
+
+
+ASK CLARE
+----------
+
+  - Has she created a Shopify app yet?
+  - Can she share the 13 product SKUs?
+  - What's the store URL? (e.g. rectella.myshopify.com)
+  - Has she got admin access?
+
+
+
+NOT HER PROBLEM
+----------------
+
+  - SYSPRO, VPN, servers, stock levels — all us
+  - Webhook URL comes later (once Azure is live)
+  - She can crack on with the app + SKUs now
+
+
+
+BRING TO THE CALL
+------------------
+
+  - Shopify admin open in browser
+  - SKU list if she has one

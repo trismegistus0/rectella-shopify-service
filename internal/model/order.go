@@ -10,6 +10,7 @@ const (
 	OrderStatusSubmitted  OrderStatus = "submitted"
 	OrderStatusFailed     OrderStatus = "failed"
 	OrderStatusDeadLetter OrderStatus = "dead_letter"
+	OrderStatusFulfilled  OrderStatus = "fulfilled"
 	OrderStatusCancelled  OrderStatus = "cancelled"
 )
 
@@ -36,6 +37,9 @@ type Order struct {
 	PaymentReference string
 	PaymentAmount    float64
 
+	// Shipping
+	ShippingAmount float64
+
 	// Raw webhook payload
 	RawPayload []byte
 
@@ -49,6 +53,10 @@ type Order struct {
 	OrderDate time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// Fulfilment tracking
+	FulfilledAt         *time.Time // nil until Shopify fulfilment created
+	ShopifyFulfilmentID string     // Shopify GID, empty until fulfilled
 }
 
 type OrderLine struct {

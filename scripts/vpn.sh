@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Connect/disconnect Rectella VPN alongside Mullvad.
+# Connect/disconnect Rectella VPN (openconnect).
 #
-# Uses mullvad-exclude to run openconnect outside the Mullvad tunnel.
-# Mullvad stays on permanently — no disconnect/reconnect dance.
+# Mullvad VPN runs on the Flint 3 router, not locally — no mullvad-exclude
+# wrapper needed, and no local Mullvad checks in the connectivity test.
 #
 # Usage: ./scripts/vpn.sh up|down|status|test
 
@@ -89,10 +89,10 @@ vpn_up() {
     exit 1
   fi
 
-  # Launch openconnect excluded from Mullvad tunnel.
-  # mullvad-exclude uses cgroups — child processes (via sudo) inherit the exclusion.
-  echo "Connecting to Rectella VPN (excluded from Mullvad)..."
-  echo "$VPN_PASS" | mullvad-exclude sudo "$OPENCONNECT" \
+  # Launch openconnect. Mullvad runs on the Flint 3 router now, not locally,
+  # so no mullvad-exclude wrapper needed.
+  echo "Connecting to Rectella VPN..."
+  echo "$VPN_PASS" | sudo "$OPENCONNECT" \
     --user="$VPN_USER" \
     --passwd-on-stdin \
     --background \
@@ -152,10 +152,6 @@ vpn_status() {
     echo "Disconnected"
     rm -f "$PID_FILE" 2>/dev/null || true
   fi
-
-  echo ""
-  echo "=== Mullvad ==="
-  mullvad status 2>/dev/null || echo "Not installed"
 }
 
 vpn_test() {
@@ -163,16 +159,7 @@ vpn_test() {
   pass=0
   fail=0
 
-  # 1. Mullvad is connected
-  if mullvad status 2>/dev/null | grep -q "Connected"; then
-    echo "  PASS  Mullvad connected"
-    pass=$((pass + 1))
-  else
-    echo "  FAIL  Mullvad not connected"
-    fail=$((fail + 1))
-  fi
-
-  # 2. tun0 exists (VPN tunnel interface)
+  # 1. tun0 exists (VPN tunnel interface)
   if ip link show tun0 &>/dev/null; then
     echo "  PASS  tun0 interface exists"
     pass=$((pass + 1))
@@ -181,7 +168,7 @@ vpn_test() {
     fail=$((fail + 1))
   fi
 
-  # 3. Can reach VPN-assigned IP (proves tunnel is passing traffic)
+  # 2. Can reach VPN-assigned IP (proves tunnel is passing traffic)
   if ping -c 1 -W 3 "$HEALTH_IP" &>/dev/null; then
     echo "  PASS  Ping $HEALTH_IP (VPN internal)"
     pass=$((pass + 1))
@@ -190,20 +177,7 @@ vpn_test() {
     fail=$((fail + 1))
   fi
 
-  # 4. External traffic goes through Mullvad (not leaking real IP)
-  external_ip=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
-  mullvad_ip=$(mullvad status 2>/dev/null | grep -oP 'IPv4: \K[0-9.]+' || echo "")
-  if [[ -n "$external_ip" && "$external_ip" == "$mullvad_ip" ]]; then
-    echo "  PASS  External traffic via Mullvad ($external_ip)"
-    pass=$((pass + 1))
-  elif [[ -n "$external_ip" ]]; then
-    echo "  FAIL  External traffic NOT via Mullvad (got $external_ip, expected $mullvad_ip)"
-    fail=$((fail + 1))
-  else
-    echo "  SKIP  Could not determine external IP"
-  fi
-
-  # 5. Rectella subnet routes exist
+  # 3. Rectella subnet routes exist
   rectella_routes=$(ip route show dev tun0 2>/dev/null | wc -l)
   if (( rectella_routes >= 5 )); then
     echo "  PASS  Rectella routes present ($rectella_routes routes via tun0)"
@@ -213,7 +187,7 @@ vpn_test() {
     fail=$((fail + 1))
   fi
 
-  # 6. RIL-APP01 hostname resolves (via /etc/hosts or DNS)
+  # 4. RIL-APP01 hostname resolves (via /etc/hosts or DNS)
   local ril_ip
   ril_ip=$(getent hosts RIL-APP01 2>/dev/null | awk '{print $1}')
   if [[ -n "$ril_ip" ]]; then

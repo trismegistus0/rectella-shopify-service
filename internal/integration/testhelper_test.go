@@ -136,7 +136,7 @@ func newTestServer(t *testing.T) *testServer {
 	})
 
 	// Webhook handler.
-	wh := webhook.NewHandler(db, secret, logger)
+	wh := webhook.NewHandler(db, secret, nil, logger)
 	wh.Register(mux)
 
 	// Orders endpoint (mirrors main.go).
@@ -251,10 +251,10 @@ func (ts *testServer) get(t *testing.T, path string) *http.Response {
 // orderPayload builds a minimal Shopify order JSON for testing.
 func orderPayload(shopifyID int64, orderName string) []byte {
 	p := map[string]any{
-		"id":         shopifyID,
-		"name":       orderName,
-		"email":      "test@example.com",
-		"created_at": "2026-03-15T10:00:00Z",
+		"id":          shopifyID,
+		"name":        orderName,
+		"email":       "test@example.com",
+		"created_at":  "2026-03-15T10:00:00Z",
 		"total_price": "149.00",
 		"gateway":     "shopify_payments",
 		"shipping_address": map[string]string{

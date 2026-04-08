@@ -14,6 +14,8 @@ import (
 
 	"codeberg.org/speeder091/rectella-shopify-service/config"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/batch"
+	"codeberg.org/speeder091/rectella-shopify-service/internal/fulfilment"
+	"codeberg.org/speeder091/rectella-shopify-service/internal/inventory"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
 	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
@@ -43,7 +45,17 @@ func run() error {
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("starting rectella-shopify-service")
+	slog.Info("starting rectella-shopify-service",
+		"company", cfg.SysproCompanyID,
+		"warehouse", cfg.SysproWarehouse,
+		"skus", len(cfg.SysproSKUs),
+		"batch_interval", cfg.BatchInterval,
+		"stock_sync_interval", cfg.StockSyncInterval,
+		"fulfilment_sync_interval", cfg.FulfilmentSyncInterval,
+		"port", cfg.Port,
+		"admin_auth", cfg.AdminToken != "",
+		"log_level", cfg.LogLevel.String(),
+	)
 
 	// Connect to database.
 	db, err := store.New(ctx, cfg.DatabaseURL)
@@ -86,14 +98,75 @@ func run() error {
 		logger,
 	)
 
+	// Set up stock sync (disabled gracefully if SYSPRO_SKUS is empty).
+	triggerCh := make(chan struct{}, 1)
+	var syncCancel context.CancelFunc
+
+	if len(cfg.SysproSKUs) > 0 {
+		if cfg.ShopifyAccessToken == "" {
+			slog.Warn("SYSPRO_SKUS configured but SHOPIFY_ACCESS_TOKEN missing, stock sync disabled")
+		} else if cfg.SysproWarehouse == "" {
+			slog.Warn("SYSPRO_SKUS configured but SYSPRO_WAREHOUSE missing, stock sync disabled")
+		} else {
+			shopifyClient := inventory.NewShopifyClient(
+				cfg.ShopifyStoreURL,
+				cfg.ShopifyAccessToken,
+				cfg.ShopifyLocationID,
+				cfg.SysproSKUs,
+				logger,
+			)
+
+			syncer := inventory.NewSyncer(
+				sysproClient, // *EnetClient satisfies InventoryQuerier
+				shopifyClient,
+				db,
+				cfg.StockSyncInterval,
+				cfg.SysproWarehouse,
+				cfg.SysproSKUs,
+				triggerCh,
+				logger,
+			)
+
+			var syncCtx context.Context
+			syncCtx, syncCancel = context.WithCancel(ctx)
+			defer syncCancel()
+			go syncer.Run(syncCtx)
+		}
+	} else {
+		slog.Warn("SYSPRO_SKUS not configured, stock sync disabled")
+	}
+
 	// Start batch processor.
 	batchProc := batch.New(db, sysproClient, cfg.BatchInterval, logger)
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	defer batchCancel()
 	go batchProc.Run(batchCtx)
 
+	// Start fulfilment syncer (disabled if SHOPIFY_ACCESS_TOKEN missing).
+	var fulfilmentCancel context.CancelFunc
+	if cfg.ShopifyAccessToken != "" {
+		fulfilmentClient := fulfilment.NewFulfilmentClient(
+			cfg.ShopifyStoreURL,
+			cfg.ShopifyAccessToken,
+			logger,
+		)
+		fulfilmentSyncer := fulfilment.NewFulfilmentSyncer(
+			sysproClient,
+			fulfilmentClient,
+			db,
+			cfg.FulfilmentSyncInterval,
+			logger,
+		)
+		var fulfilmentCtx context.Context
+		fulfilmentCtx, fulfilmentCancel = context.WithCancel(ctx)
+		defer fulfilmentCancel()
+		go fulfilmentSyncer.Run(fulfilmentCtx)
+	} else {
+		slog.Warn("SHOPIFY_ACCESS_TOKEN missing, fulfilment sync disabled")
+	}
+
 	// Register webhook handlers.
-	wh := webhook.NewHandler(db, cfg.ShopifyWebhookSecret, logger)
+	wh := webhook.NewHandler(db, cfg.ShopifyWebhookSecret, triggerCh, logger)
 	wh.Register(mux)
 
 	// Admin auth check for operations endpoints.
@@ -102,6 +175,7 @@ func run() error {
 			if cfg.AdminToken != "" {
 				token := r.Header.Get("X-Admin-Token")
 				if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AdminToken)) != 1 {
+					slog.Warn("admin auth failed", "method", r.Method, "path", r.URL.Path) //nolint:gosec // G706: slog structured fields, not interpolated
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
@@ -138,7 +212,7 @@ func run() error {
 	// Orders visibility endpoint.
 	validStatuses := map[string]bool{
 		"pending": true, "processing": true, "submitted": true,
-		"failed": true, "dead_letter": true, "cancelled": true,
+		"fulfilled": true, "failed": true, "dead_letter": true, "cancelled": true,
 	}
 	mux.HandleFunc("GET /orders", requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -238,6 +312,18 @@ func run() error {
 	slog.Info("draining batch processor (10s grace period)")
 	time.AfterFunc(10*time.Second, batchCancel)
 
+	// Drain stock syncer.
+	if syncCancel != nil {
+		slog.Info("draining stock syncer (10s grace period)")
+		time.AfterFunc(10*time.Second, syncCancel)
+	}
+
+	// Drain fulfilment syncer.
+	if fulfilmentCancel != nil {
+		slog.Info("draining fulfilment syncer (10s grace period)")
+		time.AfterFunc(10*time.Second, fulfilmentCancel)
+	}
+
 	// Graceful HTTP shutdown with 15s deadline.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -246,8 +332,14 @@ func run() error {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
-	// Ensure batch processor has stopped.
+	// Ensure batch processor and syncers have stopped.
 	batchCancel()
+	if syncCancel != nil {
+		syncCancel()
+	}
+	if fulfilmentCancel != nil {
+		fulfilmentCancel()
+	}
 
 	slog.Info("server stopped cleanly")
 	return nil

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,21 +17,32 @@ import (
 
 const testGUID = "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
 
-// successfulSORTOIResponse is the XML that SYSPRO returns on a successful SORTOI transaction.
+// successfulSORTOIResponse matches the real SYSPRO SORTOI Import-mode response format.
 const successfulSORTOIResponse = `<SalesOrders>
-  <ReturnCode>0</ReturnCode>
-  <Message></Message>
-  <Orders>
-    <OrderHeader>
-      <SalesOrder>SO12345</SalesOrder>
-    </OrderHeader>
-  </Orders>
+  <Order>
+    <SalesOrder>SO12345</SalesOrder>
+    <CustomerPoNumber>#BBQ1001</CustomerPoNumber>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+  </StatusOfItems>
 </SalesOrders>`
 
-// failedSORTOIResponse simulates a SYSPRO business-logic error.
+// failedSORTOIResponse simulates a SYSPRO Import-mode failure (no sales order number).
 const failedSORTOIResponse = `<SalesOrders>
-  <ReturnCode>1</ReturnCode>
-  <Message>Customer WEBS01 not found</Message>
+  <Order>
+    <SalesOrder/>
+    <CustomerPoNumber>#BBQ1001</CustomerPoNumber>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000001</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000000</ItemsProcessedWithWarnings>
+  </StatusOfItems>
 </SalesOrders>`
 
 // fakeEnet is a configurable httptest server that mimics the SYSPRO e.net REST API.
@@ -41,24 +51,26 @@ type fakeEnet struct {
 	logonCalls    int
 	logoffCalls   int
 	transactCalls int
+	queryCalls    int
 
 	// Behaviour overrides
-	logonErr    bool   // return HTTP 500 on /Logon
-	transactXML string // XML to return from /Transaction (default: successfulSORTOIResponse)
+	logonErr       bool              // return HTTP 500 on /Logon
+	transactXML    string            // XML to return from /Transaction (default: successfulSORTOIResponse)
+	queryResponses map[string]string // SKU -> response XML for /Query/Query
+	queryErr       bool              // return HTTP 500 on /Query/Query
 
 	server *httptest.Server
 }
 
 func newFakeEnet(t *testing.T) *fakeEnet {
 	t.Helper()
-	f := &fakeEnet{transactXML: successfulSORTOIResponse}
+	f := &fakeEnet{transactXML: successfulSORTOIResponse, queryResponses: make(map[string]string)}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
-		form, _ := url.ParseQuery(string(body))
+		params := r.URL.Query()
 
 		switch r.URL.Path {
 		case "/Logon":
@@ -72,20 +84,41 @@ func newFakeEnet(t *testing.T) *fakeEnet {
 
 		case "/Logoff":
 			f.logoffCalls++
-			if form.Get("UserId") != testGUID {
+			if params.Get("UserId") != testGUID {
 				http.Error(w, "bad UserId", http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
 
-		case "/Transaction":
+		case "/Transaction/Post":
 			f.transactCalls++
-			if form.Get("UserId") != testGUID {
+			if params.Get("UserId") != testGUID {
 				http.Error(w, "bad UserId", http.StatusBadRequest)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(f.transactXML)
+
+		case "/Query/Query":
+			f.queryCalls++
+			if f.queryErr {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if params.Get("UserId") != testGUID {
+				http.Error(w, "bad UserId", http.StatusBadRequest)
+				return
+			}
+			xmlIn := params.Get("XmlIn")
+			respXML := `<InvQuery><QueryOptions><StockCode>UNKNOWN</StockCode></QueryOptions></InvQuery>`
+			for sku, xml := range f.queryResponses {
+				if strings.Contains(xmlIn, sku) {
+					respXML = xml
+					break
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(respXML)
 
 		default:
 			http.NotFound(w, r)
@@ -95,9 +128,9 @@ func newFakeEnet(t *testing.T) *fakeEnet {
 	return f
 }
 
-func (f *fakeEnet) client(t *testing.T) *enetClient {
+func (f *fakeEnet) client(t *testing.T) *EnetClient {
 	t.Helper()
-	return &enetClient{
+	return &EnetClient{
 		baseURL:    f.server.URL,
 		operator:   "ADMIN",
 		password:   "secret",
@@ -196,8 +229,8 @@ func TestSubmitSalesOrder_TransactionSysproError(t *testing.T) {
 	if result.Success {
 		t.Error("expected Success=false for SYSPRO business error")
 	}
-	if !strings.Contains(result.ErrorMessage, "WEBS01") {
-		t.Errorf("expected error message to contain customer code, got: %q", result.ErrorMessage)
+	if !strings.Contains(result.ErrorMessage, "order rejected") {
+		t.Errorf("expected error message to mention order rejected, got: %q", result.ErrorMessage)
 	}
 }
 
@@ -243,6 +276,21 @@ func TestParseSORTOIResponse_Failure(t *testing.T) {
 	}
 }
 
+// TestParseSORTOIResponse_Windows1252 ensures the parser handles SYSPRO's encoding declaration.
+func TestParseSORTOIResponse_Windows1252(t *testing.T) {
+	xml1252 := `<?xml version="1.0" encoding="Windows-1252"?>` + successfulSORTOIResponse
+	result, err := parseSORTOIResponse(xml1252)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.SysproOrderNumber != "SO12345" {
+		t.Errorf("expected SO12345, got %q", result.SysproOrderNumber)
+	}
+}
+
 // TestParseSORTOIResponse_InvalidXML ensures malformed XML returns an error.
 func TestParseSORTOIResponse_InvalidXML(t *testing.T) {
 	_, err := parseSORTOIResponse("<broken>")
@@ -251,9 +299,195 @@ func TestParseSORTOIResponse_InvalidXML(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// parseSORTOIResponse edge-case tests
+// ---------------------------------------------------------------------------
+
+// TestParseSORTOI_EmptySalesOrder documents Import-mode behaviour:
+// when <SalesOrder/> is empty (self-closing), the import failed to create an
+// order. The parser should return Success=false.
+func TestParseSORTOI_EmptySalesOrder(t *testing.T) {
+	xml := `<SalesOrders>
+  <Order>
+    <CustomerPoNumber>#TEST-123</CustomerPoNumber>
+    <SalesOrder/>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000000</ItemsProcessedWithWarnings>
+  </StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected Success=false for empty SalesOrder in Import mode")
+	}
+	if !strings.Contains(result.ErrorMessage, "order rejected") {
+		t.Errorf("expected error about rejected order, got: %q", result.ErrorMessage)
+	}
+}
+
+// TestParseSORTOI_WithSalesOrder verifies the normal Import-mode success path
+// where SYSPRO returns an actual sales order number in the response.
+func TestParseSORTOI_WithSalesOrder(t *testing.T) {
+	xml := `<SalesOrders>
+  <Order>
+    <CustomerPoNumber>#BBQ1001</CustomerPoNumber>
+    <SalesOrder>001234</SalesOrder>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+  </StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if result.SysproOrderNumber != "001234" {
+		t.Errorf("expected SysproOrderNumber=001234, got %q", result.SysproOrderNumber)
+	}
+}
+
+// TestParseSORTOI_ImportFailed verifies that an empty SalesOrder returns
+// Success=false with an error message containing item counts.
+func TestParseSORTOI_ImportFailed(t *testing.T) {
+	xml := `<SalesOrders>
+  <Order>
+    <SalesOrder/>
+    <CustomerPoNumber>#BBQ1001</CustomerPoNumber>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000002</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000001</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+  </StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected Success=false for import failure")
+	}
+	if !strings.Contains(result.ErrorMessage, "order rejected") {
+		t.Errorf("expected error message to mention order rejected, got: %q", result.ErrorMessage)
+	}
+}
+
+// TestParseSORTOI_MalformedXML verifies that completely broken XML returns a Go
+// error (not a SalesOrderResult with Success=false).
+func TestParseSORTOI_MalformedXML(t *testing.T) {
+	_, err := parseSORTOIResponse("<SalesOrders><broken")
+	if err == nil {
+		t.Fatal("expected error for malformed XML, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing SORTOI response XML") {
+		t.Errorf("expected error to mention parsing, got: %v", err)
+	}
+}
+
+// TestParseSORTOI_WindowsEncoding verifies that the parser strips the
+// encoding="Windows-1252" XML declaration before unmarshalling, since Go's
+// xml package does not support that encoding natively.
+func TestParseSORTOI_WindowsEncoding(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="Windows-1252"?>
+<SalesOrders>
+  <Order>
+    <CustomerPoNumber>#BBQ1001</CustomerPoNumber>
+    <SalesOrder>005678</SalesOrder>
+    <OrderActionType>A</OrderActionType>
+  </Order>
+  <StatusOfItems>
+    <ItemsProcessed>000001</ItemsProcessed>
+    <ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+    <ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+  </StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true after stripping Windows-1252 declaration")
+	}
+	if result.SysproOrderNumber != "005678" {
+		t.Errorf("expected SysproOrderNumber=005678, got %q", result.SysproOrderNumber)
+	}
+}
+
+// TestParseSORTOI_RealLiveResponse uses a realistic Import-mode response
+// including attributes on the root element that the parser must tolerate.
+// Based on the actual format returned by SYSPRO 8 e.net with Process=Import.
+func TestParseSORTOI_RealLiveResponse(t *testing.T) {
+	realResponse := `<?xml version="1.0" encoding="Windows-1252"?>
+<SalesOrders Language='05' Language2='EN' CssStyle='' DecFormat='1' DateFormat='01' Role='01' Version='8.0.105' OperatorPrimaryRole='017'>
+<Order>
+<CustomerPoNumber>#TEST-1774666873</CustomerPoNumber>
+<OrderActionType>A</OrderActionType>
+<SalesOrder>015562</SalesOrder>
+</Order>
+<StatusOfItems>
+<ItemsProcessed>000001</ItemsProcessed>
+<ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+<ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+</StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(realResponse)
+	if err != nil {
+		t.Fatalf("unexpected error parsing real live response: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true for live SYSPRO response")
+	}
+	if result.SysproOrderNumber != "015562" {
+		t.Errorf("expected SysproOrderNumber=015562, got %q", result.SysproOrderNumber)
+	}
+}
+
+// TestParseSORTOI_CleanImportNoOrderElement covers the SYSPRO 8 behaviour where a
+// clean import (no warnings) returns only <StatusOfItems> with no <Order> block.
+// Verified against RILT: order 015563 was created this way.
+func TestParseSORTOI_CleanImportNoOrderElement(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="Windows-1252"?>
+<SalesOrders Language='05' Language2='EN' CssStyle='' DecFormat='1' DateFormat='01' Role='01' Version='8.0.161' OperatorPrimaryRole='017'>
+<StatusOfItems>
+<ItemsProcessed>000001</ItemsProcessed>
+<ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+<ItemsProcessedWithWarnings>000000</ItemsProcessedWithWarnings>
+</StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected Success=true for clean import, got false (message: %q)", result.ErrorMessage)
+	}
+	if result.SysproOrderNumber != "" {
+		t.Errorf("expected empty SysproOrderNumber for clean import, got %q", result.SysproOrderNumber)
+	}
+}
+
 // TestNewEnetClient_Interface verifies the constructor satisfies the Client interface.
 func TestNewEnetClient_Interface(t *testing.T) {
-	_ = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
+	var _ Client = NewEnetClient("http://example.com", "op", "pw", "co", slog.Default())
 	// Compile-time check is sufficient; this test documents the guarantee.
 	_ = fmt.Sprintf("%T", NewEnetClient)
 }

@@ -4,15 +4,21 @@ package webhook
 // inbound webhooks within this package.
 
 type shopifyOrder struct {
-	ID                  int64             `json:"id"`
-	Name                string            `json:"name"`
-	Email               string            `json:"email"`
-	CreatedAt           string            `json:"created_at"`
-	TotalPrice          string            `json:"total_price"`
-	Gateway             string            `json:"gateway"`
-	PaymentGatewayNames []string          `json:"payment_gateway_names"`
-	ShippingAddress     *shopifyAddress   `json:"shipping_address"`
-	LineItems           []shopifyLineItem `json:"line_items"`
+	ID                  int64                 `json:"id"`
+	Name                string                `json:"name"`
+	Email               string                `json:"email"`
+	CreatedAt           string                `json:"created_at"`
+	TotalPrice          string                `json:"total_price"`
+	Gateway             string                `json:"gateway"`
+	PaymentGatewayNames []string              `json:"payment_gateway_names"`
+	ShippingAddress     *shopifyAddress       `json:"shipping_address"`
+	LineItems           []shopifyLineItem     `json:"line_items"`
+	ShippingLines       []shopifyShippingLine `json:"shipping_lines"`
+}
+
+type shopifyShippingLine struct {
+	Title string `json:"title"`
+	Price string `json:"price"`
 }
 
 type shopifyAddress struct {

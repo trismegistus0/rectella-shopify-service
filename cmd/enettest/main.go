@@ -62,12 +62,12 @@ func run() error {
 }
 
 func logon(ctx context.Context, client *http.Client, baseURL, operator, password, companyID string) (string, error) {
-	form := url.Values{
+	params := url.Values{
 		"Operator":         {operator},
 		"OperatorPassword": {password},
 		"CompanyId":        {companyID},
 	}
-	body, err := post(ctx, client, baseURL+"/Logon", form)
+	body, err := doGet(ctx, client, baseURL+"/Logon", params)
 	if err != nil {
 		return "", err
 	}
@@ -82,19 +82,18 @@ func logon(ctx context.Context, client *http.Client, baseURL, operator, password
 }
 
 func logoff(ctx context.Context, client *http.Client, baseURL, guid string) error {
-	form := url.Values{
+	params := url.Values{
 		"UserId": {guid},
 	}
-	_, err := post(ctx, client, baseURL+"/Logoff", form)
+	_, err := doGet(ctx, client, baseURL+"/Logoff", params)
 	return err
 }
 
-func post(ctx context.Context, client *http.Client, target string, form url.Values) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
+func doGet(ctx context.Context, client *http.Client, target string, params url.Values) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := client.Do(req)
 	if err != nil {
