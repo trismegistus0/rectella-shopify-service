@@ -192,12 +192,24 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 		)
 	}
 
-	p.logger.Info("order submitted to SYSPRO",
-		"order_id", order.ID,
-		"shopify_order_id", order.ShopifyOrderID,
-		"order_number", order.OrderNumber,
-		"syspro_order", result.SysproOrderNumber,
-	)
+	// Clean-import responses (no warnings) don't include a <SalesOrder> element,
+	// so SysproOrderNumber is empty. The order IS created in SYSPRO but we lose
+	// traceability for reconciliation and fulfilment sync. Log WARN so ops can
+	// reconcile manually; long-term fix is a post-submit query by CustomerPoNumber.
+	if result.SysproOrderNumber == "" {
+		p.logger.Warn("order submitted to SYSPRO without traceable number (clean import)",
+			"order_id", order.ID,
+			"shopify_order_id", order.ShopifyOrderID,
+			"order_number", order.OrderNumber,
+		)
+	} else {
+		p.logger.Info("order submitted to SYSPRO",
+			"order_id", order.ID,
+			"shopify_order_id", order.ShopifyOrderID,
+			"order_number", order.OrderNumber,
+			"syspro_order", result.SysproOrderNumber,
+		)
+	}
 
 	return nil
 }

@@ -460,6 +460,41 @@ func TestParseSORTOI_RealLiveResponse(t *testing.T) {
 	}
 }
 
+// TestParseSORTOI_BackOrderWarning covers the real SYSPRO 8 response shape where a
+// line is placed on back order: the <Order> block has <SalesOrder>, <BackOrderComment>,
+// and a <WarningMessages> child. Verified against RILT on 2026-04-13 (order 015574).
+// The parser must still extract the SalesOrder number cleanly.
+func TestParseSORTOI_BackOrderWarning(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="Windows-1252"?>
+<SalesOrders Language='05' Language2='EN' CssStyle='' DecFormat='1' DateFormat='01' Role='01' Version='8.0.161' OperatorPrimaryRole='017'>
+<Order>
+<CustomerPoNumber>#TEST-1776116783</CustomerPoNumber>
+<SalesOrder>015574</SalesOrder>
+<OrderActionType>A</OrderActionType>
+<BackOrderComment>One or more lines have been placed on back order for order '000000000015574'</BackOrderComment>
+<WarningMessages>
+<WarningDescription>Line 0001 for stock code 'CBBQ0001' was placed on back order</WarningDescription>
+</WarningMessages>
+</Order>
+<StatusOfItems>
+<ItemsProcessed>000001</ItemsProcessed>
+<ItemsRejectedWithWarnings>000000</ItemsRejectedWithWarnings>
+<ItemsProcessedWithWarnings>000001</ItemsProcessedWithWarnings>
+</StatusOfItems>
+</SalesOrders>`
+
+	result, err := parseSORTOIResponse(xml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Errorf("expected Success=true for back-order warning, got false (message: %q)", result.ErrorMessage)
+	}
+	if result.SysproOrderNumber != "015574" {
+		t.Errorf("expected SysproOrderNumber=015574, got %q", result.SysproOrderNumber)
+	}
+}
+
 // TestParseSORTOI_CleanImportNoOrderElement covers the SYSPRO 8 behaviour where a
 // clean import (no warnings) returns only <StatusOfItems> with no <Order> block.
 // Verified against RILT: order 015563 was created this way.
