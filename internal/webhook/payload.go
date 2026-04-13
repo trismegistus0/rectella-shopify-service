@@ -9,6 +9,7 @@ type shopifyOrder struct {
 	Email               string                `json:"email"`
 	CreatedAt           string                `json:"created_at"`
 	TotalPrice          string                `json:"total_price"`
+	FinancialStatus     string                `json:"financial_status"`
 	Gateway             string                `json:"gateway"`
 	PaymentGatewayNames []string              `json:"payment_gateway_names"`
 	ShippingAddress     *shopifyAddress       `json:"shipping_address"`
