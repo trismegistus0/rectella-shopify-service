@@ -1,0 +1,5 @@
+# Test mock servers (not production code)
+cmd/pipeline-test/
+
+# Go test files (httptest handlers trigger XSS false positives)
+*_test.go

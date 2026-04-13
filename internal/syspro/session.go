@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
 
 // enetSession is an open SYSPRO e.net session backed by a session GUID.

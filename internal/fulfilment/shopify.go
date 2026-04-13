@@ -21,15 +21,27 @@ type FulfilmentClient struct {
 	logger      *slog.Logger
 }
 
+// FulfilmentOption configures optional FulfilmentClient settings.
+type FulfilmentOption func(*FulfilmentClient)
+
+// WithFulfilmentBaseURL overrides the Shopify GraphQL endpoint URL (for testing/staging).
+func WithFulfilmentBaseURL(url string) FulfilmentOption {
+	return func(c *FulfilmentClient) { c.baseURL = url }
+}
+
 // NewFulfilmentClient creates a Shopify fulfilment client.
-func NewFulfilmentClient(storeURL, accessToken string, logger *slog.Logger) *FulfilmentClient {
-	return &FulfilmentClient{
+func NewFulfilmentClient(storeURL, accessToken string, logger *slog.Logger, opts ...FulfilmentOption) *FulfilmentClient {
+	c := &FulfilmentClient{
 		storeURL:    storeURL,
 		accessToken: accessToken,
 		baseURL:     fmt.Sprintf("https://%s/admin/api/2025-04/graphql.json", strings.TrimRight(storeURL, "/")),
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 		logger:      logger,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 type graphqlResponse struct {

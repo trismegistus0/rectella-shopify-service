@@ -43,6 +43,10 @@ go test -tags integration ./... -count=1   # unit + integration (spins up Postgr
 go vet ./...
 gofmt -l .
 
+# Self-contained pipeline test (mock SYSPRO + mock Shopify + real Postgres)
+./scripts/pipeline.sh               # Starts service, mocks, runs 7 scenarios, cleans up
+./scripts/pipeline.sh --live        # Real SYSPRO over VPN, mock Shopify
+
 # Helper scripts
 ./scripts/run.sh         # Start PostgreSQL + load .env + run service
 ./scripts/check.sh       # Build + vet + fmt + all tests (unit + integration)
@@ -61,7 +65,7 @@ cmd/server/main.go                  # Entrypoint: config, DB, migrations, HTTP s
 cmd/enettest/main.go                # SYSPRO e.net connectivity test (logon/logoff cycle)
 cmd/sortoitest/main.go              # SORTOI test tool — submit test order to SYSPRO, dump raw response
 cmd/sorqrytest/main.go              # SORQRY/INVQRY test tool — query order/stock, dump raw response
-cmd/pipeline-test/                   # Visual pipeline test (mock SYSPRO mode)
+cmd/pipeline-test/                   # Visual pipeline test (mock SYSPRO + mock Shopify, fully self-contained)
 internal/
   batch/
     processor.go                    # Batch processor: polling loop, SYSPRO submission, error handling
@@ -138,7 +142,7 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Stock sync** (`internal/inventory/`): One-way SYSPRO → Shopify inventory sync. Polls SYSPRO INVQRY every 15m, subtracts pending/processing order quantities, clamps to 0, pushes via Shopify GraphQL `inventorySetQuantities`. Webhook-triggered 2-second debounced sync for near-instant updates. Lazy Shopify location/SKU discovery with caching. Single-flight guard, 3-minute per-cycle timeout, 10-second per-query timeout, consecutive failure tracking, graceful shutdown. Disabled gracefully if `SYSPRO_SKUS` unconfigured.
 - **Fulfilment sync** (`internal/fulfilment/`): Polls SYSPRO SORQRY every 30m for submitted orders with status "9" (complete). Creates Shopify fulfilments via GraphQL `fulfillmentCreate` mutation with tracking info (carrier from SYSPRO `ShippingInstrs`). Updates order status to `fulfilled` with Shopify fulfilment GID. Handles already-fulfilled idempotently. Single-flight guard, 3-minute per-cycle timeout, graceful 10s drain on shutdown. Disabled if `SHOPIFY_ACCESS_TOKEN` missing.
 - **Shipping/freight**: Parses `shipping_lines` from Shopify webhooks, sums into `shipping_amount` on the order. SORTOI XML builder emits `<FreightLine>` with `<FreightValue>` and `<FreightCost>` when shipping > 0. Zero shipping = no freight line emitted.
-- **Tests**: 99 unit tests (webhook handler + HMAC + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
+- **Tests**: 119 unit tests (webhook handler + HMAC + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
 - **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation
 
 ### Not Yet Built

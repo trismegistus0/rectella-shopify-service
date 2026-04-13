@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
 
 // Session represents an open SYSPRO e.net session that can submit multiple

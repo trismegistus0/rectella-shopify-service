@@ -1,4 +1,4 @@
-module codeberg.org/speeder091/rectella-shopify-service
+module github.com/trismegistus0/rectella-shopify-service
 
 go 1.25.8
 

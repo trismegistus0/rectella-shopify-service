@@ -134,8 +134,38 @@ func TestShopifyClient_SetInventoryLevels_UserErrors(t *testing.T) {
 	fake.setQuantityResp = `{"data":{"inventorySetQuantities":{"inventoryAdjustmentGroup":null,"userErrors":[{"code":"UNTRACKED","field":["quantities","0"],"message":"Item is not tracked"}]}}}`
 	c := fake.client(t, []string{"CBBQ0001"})
 	err := c.SetInventoryLevels(context.Background(), map[string]int{"CBBQ0001": 100})
+	if err == nil {
+		t.Fatal("expected error when Shopify returns userErrors, got nil")
+	}
+	if !strings.Contains(err.Error(), "UNTRACKED") {
+		t.Errorf("error should contain error code, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Item is not tracked") {
+		t.Errorf("error should contain message, got: %v", err)
+	}
+}
+
+func TestShopifyClient_BaseURLOverride(t *testing.T) {
+	fake := newFakeShopify(t)
+	c := NewShopifyClient("test.myshopify.com", "shpat_test", "", []string{"CBBQ0001"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c.baseURL = fake.server.URL
+	c.httpClient = fake.server.Client()
+	// With override, the client should use the provided URL, not construct from storeURL.
+	// This test already works because unit tests override baseURL directly.
+	// The real change is accepting baseURL via constructor for out-of-process usage.
+	err := c.SetInventoryLevels(context.Background(), map[string]int{"CBBQ0001": 50})
 	if err != nil {
-		t.Fatalf("unexpected Go error (user errors should be logged, not fatal): %v", err)
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Now test the constructor-level override.
+	c2 := NewShopifyClient("test.myshopify.com", "shpat_test", "", []string{"CBBQ0001"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), WithBaseURL(fake.server.URL))
+	c2.httpClient = fake.server.Client()
+	err = c2.SetInventoryLevels(context.Background(), map[string]int{"CBBQ0001": 50})
+	if err != nil {
+		t.Fatalf("unexpected error with WithBaseURL: %v", err)
 	}
 }
 

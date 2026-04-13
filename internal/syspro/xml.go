@@ -4,7 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
 
 // sortoiParams maps to the <SalesOrders><Parameters>...</Parameters></SalesOrders> XML

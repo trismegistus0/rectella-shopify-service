@@ -164,7 +164,7 @@ import (
 	"context"
 	"fmt"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
 
 // enetSession is an open SYSPRO e.net session backed by a session GUID.
@@ -450,8 +450,8 @@ import (
 	"sync"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
 )
 
 const maxAttempts = 3
@@ -499,8 +499,8 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
 )
 
 // mockStore implements Store for testing.
@@ -890,8 +890,8 @@ import (
 	"sync"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
 )
 ```
 
@@ -1043,7 +1043,7 @@ go batchProc.Run(batchCtx)
 
 Add the import:
 ```go
-"codeberg.org/speeder091/rectella-shopify-service/internal/batch"
+"github.com/trismegistus0/rectella-shopify-service/internal/batch"
 ```
 
 - [ ] **Step 2: Cancel batch processor on shutdown**
@@ -1112,7 +1112,7 @@ mux.HandleFunc("GET /orders", func(w http.ResponseWriter, r *http.Request) {
 
 Add the model import if not present:
 ```go
-"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+"github.com/trismegistus0/rectella-shopify-service/internal/model"
 ```
 
 - [ ] **Step 2: Verify compilation**

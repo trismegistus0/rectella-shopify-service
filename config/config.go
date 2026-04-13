@@ -33,6 +33,7 @@ type Config struct {
 	// Stock sync (optional — disabled if SysproSKUs is empty).
 	ShopifyAccessToken string
 	ShopifyLocationID  string
+	ShopifyBaseURL     string // Override full GraphQL URL (testing/staging). Constructed from StoreURL if empty.
 	SysproWarehouse    string
 	SysproSKUs         []string
 }
@@ -50,8 +51,8 @@ func Load() (*Config, error) {
 
 	c := &Config{
 		ShopifyWebhookSecret: get("SHOPIFY_WEBHOOK_SECRET"),
-		ShopifyAPIKey:        get("SHOPIFY_API_KEY"),
-		ShopifyAPISecret:     get("SHOPIFY_API_SECRET"),
+		ShopifyAPIKey:        os.Getenv("SHOPIFY_API_KEY"),
+		ShopifyAPISecret:     os.Getenv("SHOPIFY_API_SECRET"),
 		ShopifyStoreURL:      get("SHOPIFY_STORE_URL"),
 
 		SysproEnetURL:   get("SYSPRO_ENET_URL"),
@@ -70,6 +71,7 @@ func Load() (*Config, error) {
 	c.AdminToken = os.Getenv("ADMIN_TOKEN")
 	c.ShopifyAccessToken = os.Getenv("SHOPIFY_ACCESS_TOKEN")
 	c.ShopifyLocationID = os.Getenv("SHOPIFY_LOCATION_ID")
+	c.ShopifyBaseURL = os.Getenv("SHOPIFY_BASE_URL")
 	c.SysproWarehouse = os.Getenv("SYSPRO_WAREHOUSE")
 
 	// Parse comma-separated SKU list.

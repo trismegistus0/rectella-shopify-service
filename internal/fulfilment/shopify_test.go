@@ -147,6 +147,25 @@ func TestCreateFulfillment_UserError(t *testing.T) {
 	}
 }
 
+func TestFulfilmentClient_BaseURLOverride(t *testing.T) {
+	resp := `{"data":{"order":{"fulfillmentOrders":{"edges":[{"node":{"id":"gid://shopify/FulfillmentOrder/111","status":"OPEN"}}]}}}}`
+	c := testClient(t, shopifyHandler(t, resp))
+	// testClient already overrides baseURL directly; verify constructor-level override works too.
+	srv := httptest.NewServer(shopifyHandler(t, resp))
+	defer srv.Close()
+	c2 := NewFulfilmentClient("test.myshopify.com", "shpat_test",
+		slog.New(slog.NewTextHandler(io.Discard, nil)), WithFulfilmentBaseURL(srv.URL))
+	c2.httpClient = srv.Client()
+	id, err := c2.GetFulfillmentOrderID(context.Background(), 12345)
+	if err != nil {
+		t.Fatalf("unexpected error with WithFulfilmentBaseURL: %v", err)
+	}
+	_ = c
+	if id != "gid://shopify/FulfillmentOrder/111" {
+		t.Errorf("got %q, want gid://shopify/FulfillmentOrder/111", id)
+	}
+}
+
 func TestCreateFulfillment_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)

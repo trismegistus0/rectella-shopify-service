@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
 )
 
 // --- Group 5: Extended batch & pipeline scenarios ---

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/store"
 )
 
 // OrderStore is the persistence interface consumed by the webhook handler.

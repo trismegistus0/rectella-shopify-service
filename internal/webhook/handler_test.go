@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/store"
 )
 
 // mockStore implements OrderStore with function fields for test control.

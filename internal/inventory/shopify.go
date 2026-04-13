@@ -30,9 +30,17 @@ type ShopifyClient struct {
 	logger     *slog.Logger
 }
 
+// ShopifyOption configures optional ShopifyClient settings.
+type ShopifyOption func(*ShopifyClient)
+
+// WithBaseURL overrides the Shopify GraphQL endpoint URL (for testing/staging).
+func WithBaseURL(url string) ShopifyOption {
+	return func(c *ShopifyClient) { c.baseURL = url }
+}
+
 // NewShopifyClient creates a Shopify inventory client.
-func NewShopifyClient(storeURL, accessToken, locationID string, skus []string, logger *slog.Logger) *ShopifyClient {
-	return &ShopifyClient{
+func NewShopifyClient(storeURL, accessToken, locationID string, skus []string, logger *slog.Logger, opts ...ShopifyOption) *ShopifyClient {
+	c := &ShopifyClient{
 		storeURL:             storeURL,
 		accessToken:          accessToken,
 		configuredLocationID: locationID,
@@ -42,6 +50,10 @@ func NewShopifyClient(storeURL, accessToken, locationID string, skus []string, l
 		httpClient:           &http.Client{Timeout: 30 * time.Second},
 		logger:               logger,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 type graphqlResponse struct {
@@ -242,12 +254,10 @@ func (c *ShopifyClient) SetInventoryLevels(ctx context.Context, quantities map[s
 	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("parsing set quantities response: %w", err)
 	}
-	for _, ue := range result.InventorySetQuantities.UserErrors {
-		c.logger.Warn("Shopify inventory user error",
-			"code", ue.Code,
-			"field", ue.Field,
-			"message", ue.Message,
-		)
+	if len(result.InventorySetQuantities.UserErrors) > 0 {
+		ue := result.InventorySetQuantities.UserErrors[0]
+		return fmt.Errorf("inventory user error: [%s] %s", ue.Code, ue.Message)
 	}
+	return nil
 	return nil
 }

@@ -43,7 +43,7 @@ func TestLoad_AllRequiredVars(t *testing.T) {
 func TestLoad_MissingRequiredVars(t *testing.T) {
 	// Explicitly unset all required vars (CI may have some set).
 	for _, key := range []string{
-		"SHOPIFY_WEBHOOK_SECRET", "SHOPIFY_API_KEY", "SHOPIFY_API_SECRET",
+		"SHOPIFY_WEBHOOK_SECRET",
 		"SHOPIFY_STORE_URL", "SYSPRO_ENET_URL", "SYSPRO_OPERATOR",
 		"SYSPRO_COMPANY_ID", "DATABASE_URL",
 	} {
@@ -247,6 +247,41 @@ func TestParseLogLevel(t *testing.T) {
 				t.Errorf("parseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoad_ShopifyBaseURL(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("SHOPIFY_BASE_URL", "http://localhost:19200/admin/api/2025-04/graphql.json")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ShopifyBaseURL != "http://localhost:19200/admin/api/2025-04/graphql.json" {
+		t.Errorf("ShopifyBaseURL = %q, want mock URL", cfg.ShopifyBaseURL)
+	}
+}
+
+func TestLoad_APIKeyAPISecretOptional(t *testing.T) {
+	// SHOPIFY_API_KEY and SHOPIFY_API_SECRET are not consumed by any code path.
+	// They should be optional, not block startup if unset.
+	t.Setenv("SHOPIFY_WEBHOOK_SECRET", "test-secret")
+	t.Setenv("SHOPIFY_STORE_URL", "test.myshopify.com")
+	t.Setenv("SYSPRO_ENET_URL", "http://192.168.3.150:31002/SYSPROWCFService/Rest")
+	t.Setenv("SYSPRO_OPERATOR", "admin")
+	t.Setenv("SYSPRO_COMPANY_ID", "RILT")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
+	// Deliberately NOT setting SHOPIFY_API_KEY or SHOPIFY_API_SECRET.
+	t.Setenv("SHOPIFY_API_KEY", "")
+	t.Setenv("SHOPIFY_API_SECRET", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should succeed without API key/secret, got: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
 	}
 }
 

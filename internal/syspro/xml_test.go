@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
 
 func TestBuildSORTOI_ParamsXML(t *testing.T) {

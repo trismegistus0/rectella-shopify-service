@@ -15,6 +15,7 @@ import (
 func main() {
 	live := flag.Bool("live", false, "Use real SYSPRO instead of mock")
 	mockPort := flag.Int("mock-port", 19100, "Port for mock SYSPRO server")
+	mockShopifyPort := flag.Int("mock-shopify-port", 19200, "Port for mock Shopify server")
 	target := flag.String("target", "", "Service URL (default http://localhost:PORT)")
 	timeout := flag.Duration("timeout", 60*time.Second, "Per-order timeout")
 	noColor := flag.Bool("no-color", false, "Disable color output")
@@ -49,13 +50,20 @@ func main() {
 		defer mock.stop()
 	}
 
+	// Start mock Shopify.
+	shopify := newMockShopify(*mockShopifyPort)
+	if err := shopify.start(); err != nil {
+		fatal("Mock Shopify failed: %v", err)
+	}
+	defer shopify.stop()
+
 	scenarios := buildScenarios(webhookSecret)
 	p := newPrinter(*noColor)
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 
-	mode := fmt.Sprintf("mock (local fake SYSPRO on :%d)", *mockPort)
+	mode := fmt.Sprintf("mock (SYSPRO :%d, Shopify :%d)", *mockPort, *mockShopifyPort)
 	if *live {
-		mode = "live (real SYSPRO via VPN)"
+		mode = fmt.Sprintf("live SYSPRO (mock Shopify :%d)", *mockShopifyPort)
 	}
 	var orderCount int
 	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM orders").Scan(&orderCount)
@@ -65,6 +73,7 @@ func main() {
 	var results []orderResult
 	totalStart := time.Now()
 
+	// Run order scenarios (1-2: happy path orders that reach "submitted").
 	for i, s := range scenarios[:2] {
 		ok, res := runScenario(ctx, p, httpClient, pool, s, i+1, len(scenarios), *target, *timeout)
 		if ok {
@@ -76,13 +85,59 @@ func main() {
 			results = append(results, *res)
 		}
 	}
-	for i, s := range scenarios[2:] {
+
+	// Run validation scenarios (3-5: duplicate, invalid HMAC, missing SKU).
+	for i, s := range scenarios[2:5] {
 		ok, _ := runScenario(ctx, p, httpClient, pool, s, i+3, len(scenarios), *target, *timeout)
 		if ok {
 			passed++
 		} else {
 			failed++
 		}
+	}
+
+	// Scenario 6: Stock sync verification.
+	p.scenarioStart(6, len(scenarios), "STOCK-SYNC", "Inventory syncer pushes to mock Shopify")
+	syncDeadline := time.Now().Add(*timeout)
+	syncOK := false
+	for time.Now().Before(syncDeadline) {
+		if shopify.inventoryCalls.Load() > 0 {
+			syncOK = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if syncOK {
+		p.check(fmt.Sprintf("inventorySetQuantities called %dx", shopify.inventoryCalls.Load()), "OK")
+		p.pass()
+		passed++
+	} else {
+		p.fail("no inventorySetQuantities calls received (stock sync did not run)")
+		failed++
+	}
+
+	// Scenario 7: Fulfilment sync verification.
+	// Wait for orders to reach "fulfilled" status (SORQRY returns status 9 -> Shopify fulfilment created).
+	p.scenarioStart(7, len(scenarios), "FULFILMENT-SYNC", "Fulfilment syncer creates Shopify fulfilments")
+	fulfilDeadline := time.Now().Add(*timeout)
+	fulfilOK := false
+	for time.Now().Before(fulfilDeadline) {
+		var fulfilledCount int
+		_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM orders WHERE order_number LIKE '#PIPE-%' AND status = 'fulfilled'").Scan(&fulfilledCount)
+		if fulfilledCount > 0 {
+			fulfilOK = true
+			p.check(fmt.Sprintf("%d orders fulfilled", fulfilledCount), "OK")
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if fulfilOK {
+		p.check(fmt.Sprintf("fulfillmentCreate called %dx", shopify.fulfilmentCalls.Load()), "OK")
+		p.pass()
+		passed++
+	} else {
+		p.fail("no orders reached 'fulfilled' status (fulfilment sync did not run)")
+		failed++
 	}
 
 	p.summary(passed, failed, time.Since(totalStart), results)

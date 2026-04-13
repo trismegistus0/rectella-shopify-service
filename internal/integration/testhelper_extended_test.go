@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/internal/batch"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/webhook"
+	"github.com/trismegistus0/rectella-shopify-service/internal/batch"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/store"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/webhook"
 )
 
 // newTestServerWithRetry creates a test server that includes the POST /orders/{id}/retry

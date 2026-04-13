@@ -12,14 +12,14 @@ import (
 	"syscall"
 	"time"
 
-	"codeberg.org/speeder091/rectella-shopify-service/config"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/batch"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/fulfilment"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/inventory"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/model"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/store"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/syspro"
-	"codeberg.org/speeder091/rectella-shopify-service/internal/webhook"
+	"github.com/trismegistus0/rectella-shopify-service/config"
+	"github.com/trismegistus0/rectella-shopify-service/internal/batch"
+	"github.com/trismegistus0/rectella-shopify-service/internal/fulfilment"
+	"github.com/trismegistus0/rectella-shopify-service/internal/inventory"
+	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/store"
+	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
+	"github.com/trismegistus0/rectella-shopify-service/internal/webhook"
 )
 
 func main() {
@@ -108,12 +108,17 @@ func run() error {
 		} else if cfg.SysproWarehouse == "" {
 			slog.Warn("SYSPRO_SKUS configured but SYSPRO_WAREHOUSE missing, stock sync disabled")
 		} else {
+			var invOpts []inventory.ShopifyOption
+			if cfg.ShopifyBaseURL != "" {
+				invOpts = append(invOpts, inventory.WithBaseURL(cfg.ShopifyBaseURL))
+			}
 			shopifyClient := inventory.NewShopifyClient(
 				cfg.ShopifyStoreURL,
 				cfg.ShopifyAccessToken,
 				cfg.ShopifyLocationID,
 				cfg.SysproSKUs,
 				logger,
+				invOpts...,
 			)
 
 			syncer := inventory.NewSyncer(
@@ -145,10 +150,15 @@ func run() error {
 	// Start fulfilment syncer (disabled if SHOPIFY_ACCESS_TOKEN missing).
 	var fulfilmentCancel context.CancelFunc
 	if cfg.ShopifyAccessToken != "" {
+		var fulOpts []fulfilment.FulfilmentOption
+		if cfg.ShopifyBaseURL != "" {
+			fulOpts = append(fulOpts, fulfilment.WithFulfilmentBaseURL(cfg.ShopifyBaseURL))
+		}
 		fulfilmentClient := fulfilment.NewFulfilmentClient(
 			cfg.ShopifyStoreURL,
 			cfg.ShopifyAccessToken,
 			logger,
+			fulOpts...,
 		)
 		fulfilmentSyncer := fulfilment.NewFulfilmentSyncer(
 			sysproClient,

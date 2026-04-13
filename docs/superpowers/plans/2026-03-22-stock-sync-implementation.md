@@ -1811,7 +1811,7 @@ git commit -m "feat: add trigger channel to webhook handler for stock sync signa
 In `cmd/server/main.go`, add import:
 
 ```go
-"codeberg.org/speeder091/rectella-shopify-service/internal/inventory"
+"github.com/trismegistus0/rectella-shopify-service/internal/inventory"
 ```
 
 After the SYSPRO client instantiation and before the batch processor, add:
