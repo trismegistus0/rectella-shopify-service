@@ -4,7 +4,7 @@ param vnetName = 'Rectella-Network'
 param appServiceSubnetPrefix = '10.0.6.0/27'
 
 // Pin to current head commit for reproducibility.
-param containerImage = 'ghcr.io/trismegistus0/rectella-shopify-service:sha-9673bb4'
+param containerImage = 'ghcr.io/trismegistus0/rectella-shopify-service:sha-eba4ab5'
 
 param shopifyStoreUrl = 'rectella.myshopify.com'
 param sysproEnetUrl = 'http://192.168.3.150:31002/SYSPROWCFService/Rest'
