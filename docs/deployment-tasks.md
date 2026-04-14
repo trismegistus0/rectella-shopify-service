@@ -32,6 +32,8 @@ dependencies clear". Critical path notes at the bottom.
 | 12 | Runtime-verify dynamic stock sync against RILT: observe `stock list refreshed count=N`, then `stock sync cycle complete skus_updated=N` | Bast | task 11 | ⏳ |
 | 13 | Place real test order on live Shopify store with cheapest SKU, watch full flow webhook → DB → batch → SORTOI → real SYSPRO order number | Bast | task 12 | ⏳ |
 | 14 | Sarah confirms the order is correct in SYSPRO + cancels it | Sarah | task 13 | ⏳ |
+| **Payment posting — MVP for go-live (promoted from Phase 2)** |||||
+| 14a | 🆕 **Minimum-viable payment posting: daily Shopify cash-receipt email to credit control.** Scheduled job pulls prior-day paid transactions from Shopify Transactions API, formats a CSV/PDF summary (order ref, gross amount, Shopify fee, net, gateway, processed_at, computed SYSPRO posting period YYYYMM), emails to Rectella credit control. This is the floor — Liz posts cash receipts manually in SYSPRO from the report. Unblocks finance sign-off for launch without full ARSPAY automation. | Bast | Liz email address for credit control + SMTP/outbound email relay credentials | 🆕 |
 | **Phase 2 — Azure cutover (parallel with local-side; advances independently)** |||||
 | 15 | Andrew bumps Bast's Azure role to Contributor on whole "Rectella Azure Plan" subscription | Andrew | — | ✅ confirmed working via `az provider register` |
 | 16 | `az provider register --namespace Microsoft.Web` and `--namespace Microsoft.Compute` | Bast | task 15 | ✅ both `Registered` |
@@ -53,7 +55,7 @@ dependencies clear". Critical path notes at the bottom.
 | 28 | Delete the unused `apps-subnet` + `apps-subnet-rt` route table (careful — same route table also attached to app-service-subnet; clone first if needed) | Bast | task 27 | ⏳ |
 | 29 | Stop local service + Cloudflare tunnel, archive logs | Bast | task 26 | ⏳ |
 | **Phase 2 backlog (post-launch)** |||||
-| 30 | ARSPAY automated cash-receipt posting | Bast + Sarah | her ARSPAY field defaults | 📋 |
+| 30 | ARSPAY automated cash-receipt posting — full automation replacing task 14a. Architecture designed in `arse-pay` branch (see ARSPAY notes below). Polling-cycle syncer posts gross + bank charges per Shopify order; SYSPRO AR module routes bank charges GL automatically. Posting period computed `YYYYMM` from `processed_at`. One cash-book code from Liz (`ARSPAY_CASH_BOOK` env). | Bast + Sarah | Sarah: ARSPAY XML field spec (element names). Liz: `ARSPAY_CASH_BOOK` code + Phase-1 lift (currently out-of-scope in `CLAUDE.md:229`). Shopify Transactions API fetcher + DB migration `002_payment_postings` + `internal/payments/syncer.go` scaffold can be built without either. | 📋 |
 | 31 | SYSPRO order cancellation handler (Shopify `orders/cancelled` webhook → cancel in SYSPRO) | Bast | scope decision | 📋 |
 | 32 | Gift card handling (non-stocked SORTOI lines) | Bast | Liz approval | 📋 |
 | 33 | Multi-warehouse support if scope changes | Bast | business decision | 📋 |
@@ -105,3 +107,37 @@ Track A does not depend on Track B: the local stack already works and can go liv
 - `cmd/invbrwtest` stays in the repo as evidence of why the Shopify-first / SQL approach was picked over an e.net business object.
 - Quota requests in the Azure Portal (`Help + support → New support request → Service and subscription limits → App Service`) are typically auto-approved in 5–30 minutes for single-digit Basic-tier asks on new subscriptions.
 - Operator session collision: local service and Azure service share the same SYSPRO operator `ctrlaltinsight`. Before the first live Azure test order (task 22), stop the local service to avoid the second logon killing the first. Post-launch, consider a dedicated App Service operator account (post-hypercare task).
+
+## ARSPAY design notes (from `arse-pay` investigation branch)
+
+Context: partial Phase-1 scope pulled in via task 14a (daily email). Full automation remains task 30 for post-launch. Investigation captured here so neither side has to re-derive.
+
+**Canonical SYSPRO cash-receipt shape (per Bast's SYSPRO knowledge):**
+- `Amount` = gross (what customer paid, i.e. Shopify `total_price`)
+- `BankCharges` = gross − net (Shopify Payments + gateway fees)
+- SYSPRO computes net = Amount − BankCharges internally and posts to the cashbook
+- Bank charges GL is NOT supplied — AR module integration settings route it automatically
+- Only one GL code needed from Liz: `ARSPAY_CASH_BOOK` (cashbook code, e.g. `BANK1`)
+
+**Posting period format:** `YYYYMM` (e.g. `202601` = Jan 2026), computed in Go via `processedAt.UTC().Format("200601")` — Go's reference-date layout, not a literal. Financial year = calendar year (1 Jan – 31 Dec).
+
+**Timing wrinkle:** Shopify Payments `balance_transaction.fee` only populates after settlement (seconds to hours; sometimes days on third-party gateways). Real-time posting from `orders/create` webhook would frequently miss the fee. Solution: polling-cycle syncer (mirrors existing batch-processor / stock-syncer / fulfilment-syncer pattern) that scans `orders WHERE status='submitted' AND payment_posted_at IS NULL`, fetches transactions, posts when fee is known, skips until next cycle otherwise.
+
+**Period-closure edge case:** if Liz closes the prior period before a straggling fee settles, SYSPRO rejects with "posting period closed". Mitigation: catch the error, re-derive period as current month, re-submit, log both for audit.
+
+**Idempotency:** new `payment_postings` table with `UNIQUE (shopify_transaction_id)`. Second attempt = no-op.
+
+**Scaffold work that's safe to build now without Sarah's XML spec or Liz's sign-off:**
+1. Shopify Transactions API fetcher (`GET /admin/api/2025-04/orders/{id}/transactions.json`)
+2. DB migration `002_payment_postings.up.sql` + down migration
+3. `internal/payments/syncer.go` polling-loop skeleton (single-flight, graceful drain, 15m default interval)
+4. `internal/syspro/cash_receipt.go` — `PostCashReceipt(ctx, r)` signature + XML builder stubbed with field-name TODOs
+5. Unit tests with mocked Shopify + mocked SYSPRO `/Transaction` endpoint
+
+**Still needed before task 30 can be completed:**
+| From | What |
+|---|---|
+| Sarah | ARSPAY XML field spec — exact element names for Customer, Amount, BankCharges, Period, CashBook, PaymentReference, PaymentDate, plus `<Parameters>` block equivalents |
+| Liz | `ARSPAY_CASH_BOOK` code (single value) |
+| Liz | Sign-off to pull automated payment posting from Phase 2 into Phase 1 (currently out-of-scope in `CLAUDE.md:229`) |
+| Bast | Credit control email address + outbound SMTP relay (for task 14a MVP) |
