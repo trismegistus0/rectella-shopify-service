@@ -26,6 +26,31 @@ func (db *DB) WebhookExists(ctx context.Context, webhookID string) (bool, error)
 	return exists, nil
 }
 
+// ShopifyOrdersExist returns the subset of Shopify order IDs already persisted.
+// Used by the reconciliation sweeper to find gaps in webhook delivery.
+func (db *DB) ShopifyOrdersExist(ctx context.Context, shopifyOrderIDs []int64) (map[int64]bool, error) {
+	existing := make(map[int64]bool, len(shopifyOrderIDs))
+	if len(shopifyOrderIDs) == 0 {
+		return existing, nil
+	}
+	rows, err := db.Pool.Query(ctx,
+		`SELECT shopify_order_id FROM orders WHERE shopify_order_id = ANY($1)`,
+		shopifyOrderIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying existing shopify order ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning shopify order id: %w", err)
+		}
+		existing[id] = true
+	}
+	return existing, rows.Err()
+}
+
 // CreateOrder persists a webhook event, order, and its line items in a single transaction.
 // Returns ErrDuplicateWebhook if the webhook_id already exists (unique constraint violation).
 func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order model.Order, lines []model.OrderLine) error {

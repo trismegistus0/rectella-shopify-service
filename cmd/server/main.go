@@ -17,6 +17,7 @@ import (
 	"github.com/trismegistus0/rectella-shopify-service/internal/fulfilment"
 	"github.com/trismegistus0/rectella-shopify-service/internal/inventory"
 	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/reconcile"
 	"github.com/trismegistus0/rectella-shopify-service/internal/store"
 	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
 	"github.com/trismegistus0/rectella-shopify-service/internal/webhook"
@@ -146,6 +147,21 @@ func run() error {
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	defer batchCancel()
 	go batchProc.Run(batchCtx)
+
+	// Start reconciliation sweeper (catches orders missed by webhook delivery).
+	// Disabled gracefully if ShopifyAccessToken or ReconciliationInterval unset.
+	var reconcileCancel context.CancelFunc
+	if cfg.ReconciliationInterval > 0 {
+		sw := reconcile.New(db, cfg.ShopifyStoreURL, cfg.ShopifyAccessToken, cfg.ReconciliationInterval, logger)
+		if sw != nil {
+			var reconcileCtx context.Context
+			reconcileCtx, reconcileCancel = context.WithCancel(ctx)
+			defer reconcileCancel()
+			go sw.Run(reconcileCtx)
+		}
+	} else {
+		slog.Info("reconciliation sweep disabled (RECONCILIATION_INTERVAL unset)")
+	}
 
 	// Start fulfilment syncer (disabled if SHOPIFY_ACCESS_TOKEN missing).
 	var fulfilmentCancel context.CancelFunc

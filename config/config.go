@@ -27,6 +27,7 @@ type Config struct {
 	StockSyncInterval      time.Duration
 	BatchInterval          time.Duration
 	FulfilmentSyncInterval time.Duration
+	ReconciliationInterval time.Duration // 0 = disabled
 
 	LogLevel slog.Level
 
@@ -123,6 +124,15 @@ func Load() (*Config, error) {
 	c.FulfilmentSyncInterval, err = parseDuration("FULFILMENT_SYNC_INTERVAL", "30m")
 	if err != nil {
 		return nil, err
+	}
+
+	// Reconciliation sweep default is OFF (zero duration). Operators opt in
+	// by setting RECONCILIATION_INTERVAL to something like "24h" in App Service.
+	if raw := os.Getenv("RECONCILIATION_INTERVAL"); raw != "" {
+		c.ReconciliationInterval, err = time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration for RECONCILIATION_INTERVAL: %w", err)
+		}
 	}
 
 	c.LogLevel, err = parseLogLevel(os.Getenv("LOG_LEVEL"))
