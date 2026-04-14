@@ -148,10 +148,12 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Operator runbook** (`docs/runbook.md`): Single-page playbook for ops handover covering order status queries, retry, rollback, common incidents (VPN down, HMAC mismatch, stuck `processing`, clean-import traceability), known limitations, and escalation contacts.
 - **Shipping/freight**: Parses `shipping_lines` from Shopify webhooks, sums into `shipping_amount` on the order. SORTOI XML builder emits `<FreightLine>` with `<FreightValue>` and `<FreightCost>` when shipping > 0. Zero shipping = no freight line emitted.
 - **Tests**: ~130 unit tests (webhook handler + HMAC + financial-status gate + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + graceful-drain invariant + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer + reconciliation sweeper + config + PLACEHOLDER validation) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
-- **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation. Includes 2026-04-14 dress rehearsal using real Shopify dev store product `LUMP0148` over Cloudflare Tunnel to the local service to RILT company, producing SYSPRO order `015575` end-to-end.
+- **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation. Includes dress rehearsal using real Shopify dev store product `LUMP0148` over Cloudflare Tunnel to the local service to RILT company, producing SYSPRO order `015575` end-to-end.
+- **Dynamic SKU discovery** (`internal/inventory/shopify.go:ListAllSKUs`): Paginated Shopify GraphQL `productVariants` query returning unique non-empty SKUs. Wired into the `Syncer` via a `SKULister` interface: when `SYSPRO_SKUS` is empty, the syncer calls the lister each cycle and falls back to the static slice if discovery errors or returns zero results. Boot log shows `stock sync enabled mode=dynamic|static`. SYSPRO-side business object approach was empirically ruled out via `cmd/invbrwtest` — no e.net business object on RILT returns a warehouse stock list (INVQRY requires `StockCode` in Key; INVBRW/INVQWH/INVLST/COMBGQ all `Program not found`). A SQL-direct path against RIL-DB01 is planned as the primary lister with Shopify-first as fallback.
 
 ### Not Yet Built
 
+- SQL Server lister (primary path — pending Sarah's WEBS warehouse SQL query and SQL Server credentials)
 - Gift card handling (non-stocked lines in SORTOI — pending Liz Buckley finance approval)
 - Order cancellation handler
 
@@ -253,11 +255,12 @@ VPN_PASSWORD              # VPN password
 | Sarah Adamo | SYSPRO Consultant (Ctrl Alt Insight) | sarah@ctrlaltinsight.co.uk |
 | Sebastian Adamo | Developer (Ctrl Alt Insight) | sebastian@ctrlaltinsight.co.uk |
 
-## Timeline
+## Status
 
-- **Started**: Late January 2026
-- **Target go-live**: 31 March 2026
-- **Hypercare**: Four weeks post go-live
+Active deployment — pushing for go-live as soon as dependencies clear. The
+live schedule lives in `docs/deployment-tasks.md`; treat that as the single
+source of truth for outstanding work. Hypercare window is four weeks post
+go-live.
 
 ## SYSPRO Reference Docs
 
