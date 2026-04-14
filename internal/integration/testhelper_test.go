@@ -251,12 +251,13 @@ func (ts *testServer) get(t *testing.T, path string) *http.Response {
 // orderPayload builds a minimal Shopify order JSON for testing.
 func orderPayload(shopifyID int64, orderName string) []byte {
 	p := map[string]any{
-		"id":          shopifyID,
-		"name":        orderName,
-		"email":       "test@example.com",
-		"created_at":  "2026-03-15T10:00:00Z",
-		"total_price": "149.00",
-		"gateway":     "shopify_payments",
+		"id":               shopifyID,
+		"name":             orderName,
+		"email":            "test@example.com",
+		"created_at":       "2026-03-15T10:00:00Z",
+		"total_price":      "149.00",
+		"financial_status": "paid",
+		"gateway":          "shopify_payments",
 		"shipping_address": map[string]string{
 			"first_name": "Test",
 			"last_name":  "User",

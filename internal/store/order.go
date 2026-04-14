@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -141,6 +142,31 @@ func (db *DB) CreateOrder(ctx context.Context, event model.WebhookEvent, order m
 	}
 
 	return nil
+}
+
+// ResetStaleProcessing flips orders stuck in 'processing' for longer than
+// olderThan back to 'pending' and bumps their attempts counter. Intended to
+// be called once on service boot, before the batch processor starts.
+//
+// An order reaches 'processing' via MarkOrderProcessing and is expected to
+// leave it within a few seconds (success -> 'submitted', business error ->
+// 'failed', infra error -> 'pending'). If the service is killed between the
+// MarkOrderProcessing Exec and the terminal Update, the row is left stuck
+// forever. This guard makes shutdown safe-by-default: on next boot those
+// rows are retried via the normal batch path.
+//
+// Returns the number of rows reset.
+func (db *DB) ResetStaleProcessing(ctx context.Context, olderThan time.Duration) (int, error) {
+	tag, err := db.Pool.Exec(ctx,
+		`UPDATE orders
+		 SET status = 'pending', attempts = attempts + 1, updated_at = NOW()
+		 WHERE status = 'processing' AND updated_at < NOW() - $1::interval`,
+		fmt.Sprintf("%d seconds", int(olderThan.Seconds())),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("resetting stale processing orders: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // MarkOrderProcessing atomically transitions an order from 'pending' to 'processing'.

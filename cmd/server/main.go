@@ -71,6 +71,16 @@ func run() error {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 
+	// Reset stale 'processing' orders. An order only reaches processing
+	// between MarkOrderProcessing and the terminal status update; if the
+	// service was killed in that window, the row is stuck. Boot-time sweep
+	// flips anything older than 10 minutes back to pending for retry.
+	if reset, err := db.ResetStaleProcessing(ctx, 10*time.Minute); err != nil {
+		slog.Warn("failed to reset stale processing orders", "error", err)
+	} else if reset > 0 {
+		slog.Info("reset stale processing orders", "count", reset)
+	}
+
 	// Set up HTTP routes.
 	mux := http.NewServeMux()
 

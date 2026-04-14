@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
@@ -394,6 +395,100 @@ func TestHealth_OK(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&body)
 	if body["status"] != "ok" {
 		t.Errorf("expected status ok, got %q", body["status"])
+	}
+}
+
+// TestResetStaleProcessing verifies the boot-time sweep that recovers orders
+// stuck in 'processing' after a service crash. This is defect N from the
+// overnight plan: MarkOrderProcessing transitions pending->processing before
+// SYSPRO is called; if the service dies in that window the row is stuck
+// forever. The boot sweep flips stale rows back to pending for retry.
+func TestResetStaleProcessing(t *testing.T) {
+	ts := newTestServer(t)
+	payload := orderPayload(5559999, "#BBQ9999")
+
+	resp := ts.sendWebhook(t, "wh-stale-001", payload)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("webhook failed: %d", resp.StatusCode)
+	}
+
+	// Find the order and mark it processing, then backdate its updated_at
+	// so it looks stale.
+	pending, _ := ts.DB.ListOrdersByStatus(context.Background(), model.OrderStatusPending)
+	if len(pending) == 0 {
+		t.Fatal("expected at least 1 pending order after webhook")
+	}
+	var staleID int64
+	for _, o := range pending {
+		if o.OrderNumber == "#BBQ9999" {
+			staleID = o.ID
+			break
+		}
+	}
+	if staleID == 0 {
+		t.Fatal("could not find #BBQ9999 in pending orders")
+	}
+
+	ok, err := ts.DB.MarkOrderProcessing(context.Background(), staleID)
+	if err != nil || !ok {
+		t.Fatalf("MarkOrderProcessing failed: ok=%v err=%v", ok, err)
+	}
+
+	// Backdate updated_at to simulate a stale row (older than 10 min threshold).
+	_, err = ts.DB.Pool.Exec(context.Background(),
+		`UPDATE orders SET updated_at = NOW() - interval '1 hour' WHERE id = $1`,
+		staleID,
+	)
+	if err != nil {
+		t.Fatalf("backdating updated_at: %v", err)
+	}
+
+	// Call the sweep with a 10-minute threshold.
+	reset, err := ts.DB.ResetStaleProcessing(context.Background(), 10*time.Minute)
+	if err != nil {
+		t.Fatalf("ResetStaleProcessing: %v", err)
+	}
+	if reset != 1 {
+		t.Errorf("expected 1 row reset, got %d", reset)
+	}
+
+	// Verify it's back to pending with attempts incremented.
+	pendingAfter, _ := ts.DB.ListOrdersByStatus(context.Background(), model.OrderStatusPending)
+	var found *model.Order
+	for i := range pendingAfter {
+		if pendingAfter[i].ID == staleID {
+			found = &pendingAfter[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("stale order did not return to pending")
+	}
+	if found.Attempts < 1 {
+		t.Errorf("expected attempts >= 1 after reset, got %d", found.Attempts)
+	}
+
+	// Fresh processing rows (not stale) must NOT be reset.
+	ts2 := newTestServer(t)
+	payload2 := orderPayload(5559998, "#BBQ9998")
+	resp2 := ts2.sendWebhook(t, "wh-stale-002", payload2)
+	resp2.Body.Close()
+	pending2, _ := ts2.DB.ListOrdersByStatus(context.Background(), model.OrderStatusPending)
+	if len(pending2) != 1 {
+		t.Fatalf("setup: expected 1 pending, got %d", len(pending2))
+	}
+	_, err = ts2.DB.MarkOrderProcessing(context.Background(), pending2[0].ID)
+	if err != nil {
+		t.Fatalf("MarkOrderProcessing: %v", err)
+	}
+	// No backdating — row is fresh.
+	reset2, err := ts2.DB.ResetStaleProcessing(context.Background(), 10*time.Minute)
+	if err != nil {
+		t.Fatalf("ResetStaleProcessing: %v", err)
+	}
+	if reset2 != 0 {
+		t.Errorf("expected 0 fresh rows reset, got %d", reset2)
 	}
 }
 
