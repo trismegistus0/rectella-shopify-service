@@ -10,7 +10,7 @@ import (
 
 func TestBuildSORTOI_ParamsXML(t *testing.T) {
 	order := minimalOrder()
-	paramsXML, _, err := buildSORTOI(order, nil)
+	paramsXML, _, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestBuildSORTOI_DataXML_HeaderFields(t *testing.T) {
 		ShipPostcode:    "BB10 2TP",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil)
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 		{SKU: "CBBQ0002", Quantity: 1, UnitPrice: 12.50},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines)
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 func TestBuildSORTOI_EmptyAddressOmitted(t *testing.T) {
 	order := minimalOrder()
 	// No address fields set
-	_, dataXML, err := buildSORTOI(order, nil)
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBuildSORTOI_SpecialCharsEscaped(t *testing.T) {
 	order := minimalOrder()
 	order.ShipAddress1 = `Foo & Bar <Baz> "Qux"`
 
-	_, dataXML, err := buildSORTOI(order, nil)
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 		{SKU: "CBBQ0003", Quantity: 1, UnitPrice: 15.00, Discount: 5.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines)
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 		{SKU: "CBBQ0001", Quantity: 1, UnitPrice: 599.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines)
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
 	order := minimalOrder()
 	// ShippingAmount is zero (default)
-	_, dataXML, err := buildSORTOI(order, nil)
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestBuildSORTOI_TruncatesLongFields(t *testing.T) {
 		ShipPostcode:    "SOME-VERY-LONG-INTERNATIONAL-POSTCODE-12345",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil)
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -29,7 +29,7 @@ func (c *EnetClient) OpenSession(ctx context.Context) (Session, error) {
 
 // SubmitOrder sends a single SORTOI transaction on this session.
 func (s *enetSession) SubmitOrder(ctx context.Context, order model.Order, lines []model.OrderLine) (*SalesOrderResult, error) {
-	paramsXML, dataXML, err := buildSORTOI(order, lines)
+	paramsXML, dataXML, err := buildSORTOI(order, lines, s.client.warehouse)
 	if err != nil {
 		return nil, fmt.Errorf("building SORTOI XML: %w", err)
 	}
@@ -37,6 +37,7 @@ func (s *enetSession) SubmitOrder(ctx context.Context, order model.Order, lines 
 	s.client.logger.Debug("submitting SORTOI",
 		"order_number", order.OrderNumber,
 		"lines", len(lines),
+		"warehouse", s.client.warehouse,
 	)
 
 	respXML, err := s.client.transaction(ctx, s.guid, "SORTOI", paramsXML, dataXML)

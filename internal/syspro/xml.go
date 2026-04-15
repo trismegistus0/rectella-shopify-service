@@ -1,6 +1,7 @@
 package syspro
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 
@@ -63,6 +64,7 @@ type sortoiStockLine struct {
 	CustomerPoLine string  `xml:"CustomerPoLine"`
 	LineActionType string  `xml:"LineActionType"`
 	StockCode      string  `xml:"StockCode"`
+	Warehouse      string  `xml:"Warehouse,omitempty"` // Forces allocation from this warehouse; omitted uses stock code default
 	OrderQty       int     `xml:"OrderQty"`
 	OrderUom       string  `xml:"OrderUom"`
 	Price          float64 `xml:"Price"`
@@ -91,9 +93,50 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// extractShippingInstrs pulls the first shipping-line title and carrier code
+// (if present) out of the raw Shopify webhook payload. Returns empty strings
+// if the payload can't be parsed or the order had no shipping lines.
+// SYSPRO's ShippingInstrs XSD limit is ~30 chars; carrier code limit is shorter
+// so callers should truncate before emitting.
+func extractShippingInstrs(rawPayload []byte) (title string, code string) {
+	if len(rawPayload) == 0 {
+		return "", ""
+	}
+	var p struct {
+		ShippingLines []struct {
+			Title              string `json:"title"`
+			Code               string `json:"code"`
+			CarrierIdentifier  string `json:"carrier_identifier"`
+			Source             string `json:"source"`
+		} `json:"shipping_lines"`
+	}
+	if err := json.Unmarshal(rawPayload, &p); err != nil {
+		return "", ""
+	}
+	if len(p.ShippingLines) == 0 {
+		return "", ""
+	}
+	sl := p.ShippingLines[0]
+	title = sl.Title
+	// Prefer the explicit carrier_identifier, fall back to `code` (some
+	// gateways populate only one of the two).
+	code = sl.CarrierIdentifier
+	if code == "" {
+		code = sl.Code
+	}
+	return title, code
+}
+
+// SYSPRO ShippingInstrs XSD limits (from sales-orders-reference-guide).
+const (
+	maxShippingInstrs    = 30
+	maxShippingInstrsCod = 10
+)
+
 // buildSORTOI produces the two XML strings required by the SORTOI transaction call.
+// `warehouse` is forced onto every line (empty string falls back to stock-code default).
 // Returns (paramsXML, dataXML, error).
-func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, error) {
+func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse string) (string, string, error) {
 	params := sortoiParams{
 		Process:                    "Import",
 		StatusInProcess:            "N",
@@ -119,12 +162,15 @@ func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, er
 			CustomerPoLine: fmt.Sprintf("%04d", i+1),
 			LineActionType: "A",
 			StockCode:      l.SKU,
+			Warehouse:      warehouse,
 			OrderQty:       l.Quantity,
 			OrderUom:       "EA",
 			Price:          netPrice,
 			PriceUom:       "EA",
 		}
 	}
+
+	shipTitle, shipCode := extractShippingInstrs(order.RawPayload)
 
 	details := sortoiDetail{Lines: stockLines}
 	if order.ShippingAmount > 0 {
@@ -137,17 +183,19 @@ func buildSORTOI(order model.Order, lines []model.OrderLine) (string, string, er
 	doc := sortoiDocument{
 		Orders: sortoiOrder{
 			Header: sortoiHeader{
-				CustomerPoNumber: truncate(order.OrderNumber, maxCustomerPoNumber),
-				OrderActionType:  "A",
-				Customer:         order.CustomerAccount,
-				OrderDate:        order.OrderDate.Format("2006-01-02"),
-				Email:            truncate(order.ShipEmail, maxEmail),
-				ShipAddress1:     truncate(order.ShipAddress1, maxAddressLine),
-				ShipAddress2:     truncate(order.ShipAddress2, maxAddressLine),
-				ShipAddress3:     truncate(order.ShipCity, maxAddressLine),
-				ShipAddress4:     truncate(order.ShipProvince, maxAddressLine),
-				ShipAddress5:     truncate(order.ShipCountry, maxAddressLine),
-				ShipPostalCode:   truncate(order.ShipPostcode, maxPostcode),
+				CustomerPoNumber:  truncate(order.OrderNumber, maxCustomerPoNumber),
+				OrderActionType:   "A",
+				Customer:          order.CustomerAccount,
+				OrderDate:         order.OrderDate.Format("2006-01-02"),
+				Email:             truncate(order.ShipEmail, maxEmail),
+				ShippingInstrs:    truncate(shipTitle, maxShippingInstrs),
+				ShippingInstrsCod: truncate(shipCode, maxShippingInstrsCod),
+				ShipAddress1:      truncate(order.ShipAddress1, maxAddressLine),
+				ShipAddress2:      truncate(order.ShipAddress2, maxAddressLine),
+				ShipAddress3:      truncate(order.ShipCity, maxAddressLine),
+				ShipAddress4:      truncate(order.ShipProvince, maxAddressLine),
+				ShipAddress5:      truncate(order.ShipCountry, maxAddressLine),
+				ShipPostalCode:    truncate(order.ShipPostcode, maxPostcode),
 			},
 			Details: details,
 		},
