@@ -149,11 +149,15 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 - **Shipping/freight**: Parses `shipping_lines` from Shopify webhooks, sums into `shipping_amount` on the order. SORTOI XML builder emits `<FreightLine>` with `<FreightValue>` and `<FreightCost>` when shipping > 0. Zero shipping = no freight line emitted.
 - **Tests**: ~130 unit tests (webhook handler + HMAC + financial-status gate + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + graceful-drain invariant + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer + reconciliation sweeper + config + PLACEHOLDER validation) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
 - **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation. Includes dress rehearsal using real Shopify dev store product `LUMP0148` over Cloudflare Tunnel to the local service to RILT company, producing SYSPRO order `015575` end-to-end.
-- **Dynamic SKU discovery** (`internal/inventory/shopify.go:ListAllSKUs`): Paginated Shopify GraphQL `productVariants` query returning unique non-empty SKUs. Wired into the `Syncer` via a `SKULister` interface: when `SYSPRO_SKUS` is empty, the syncer calls the lister each cycle and falls back to the static slice if discovery errors or returns zero results. Boot log shows `stock sync enabled mode=dynamic|static`. SYSPRO-side business object approach was empirically ruled out via `cmd/invbrwtest` — no e.net business object on RILT returns a warehouse stock list (INVQRY requires `StockCode` in Key; INVBRW/INVQWH/INVLST/COMBGQ all `Program not found`). A SQL-direct path against RIL-DB01 is planned as the primary lister with Shopify-first as fallback.
+- **Dynamic SKU discovery** (`internal/inventory/shopify.go:ListAllSKUs`): Paginated Shopify GraphQL `productVariants` query returning unique non-empty SKUs. Wired into the `Syncer` via a `SKULister` interface: when `SYSPRO_SKUS` is empty, the syncer calls the lister each cycle and falls back to the static slice if discovery errors or returns zero results. Boot log shows `stock sync lister=sql|shopify|static`. SYSPRO-side business object approach was empirically ruled out via `cmd/invbrwtest`.
+- **SQL Server lister** (`internal/inventory/sqlserver_lister.go`): Primary source for the WEBS warehouse stock-code list via Sarah's `bq_WEBS_Whs_QoH` view on RIL-DB01. Uses `github.com/microsoft/go-mssqldb`, 10s per-query timeout, dedupes whitespace + blanks. Wired into `cmd/server/main.go` with precedence SQL (if `SQLSERVER_DSN` set and ping succeeds) → Shopify (if token set) → static slice. Unit-tested with `go-sqlmock`; runtime verification blocks on RIL-DB01 credentials.
+- **Payments scaffold — ARSPAY cash receipts** (`internal/payments/`, `internal/syspro/cash_receipt.go`, migration 006): Polling-cycle syncer mirroring the inventory syncer pattern. `internal/payments/shopify_transactions.go` pulls gross/fee/net from Shopify Admin REST (`orders/{id}/transactions.json` + `orders.json` Link-header pagination). `payment_postings` table is idempotent on `shopify_transaction_id`, state machine `pending → posted | failed → dead_letter`. `syspro.PostCashReceipt` is stubbed returning `ErrCashReceiptNotImplemented` — the syncer treats that sentinel as "leave pending, don't count as failure" so the feature flag can flip without data cleanup once Sarah delivers the ARSPAY XML spec and Liz signs off. Syncer disabled unless `PAYMENTS_SYNC_INTERVAL` is set. `CashReceipt.PostingPeriod()` uses Go's `"200601"` reference-date layout for SYSPRO's YYYYMM format.
+- **Daily cash-receipt email MVP** (`internal/payments/report.go`, `mailer.go`, `daily_report.go`): Stopgap while ARSPAY automation is pending. Scheduled job wakes every 15m, fires once per UTC day at `DAILY_REPORT_HOUR` (default 07), pulls yesterday's Shopify transactions, emails a CSV to credit control via stdlib `net/smtp` + optional STARTTLS with base64 multipart MIME attachment. Zero-transaction days still send (proof of life). Disabled gracefully unless `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `CREDIT_CONTROL_TO`, `SHOPIFY_ACCESS_TOKEN` all set. `SendForDate` exposed for one-shot re-runs.
 
 ### Not Yet Built
 
-- SQL Server lister (primary path — pending Sarah's WEBS warehouse SQL query and SQL Server credentials)
+- Runtime verification of SQL Server lister (code done, blocks on RIL-DB01 creds)
+- ARSPAY XML wire format + automated cash-receipt posting (scaffold done, blocks on Sarah's spec + Liz sign-off)
 - Gift card handling (non-stocked lines in SORTOI — pending Liz Buckley finance approval)
 - Order cancellation handler
 
@@ -212,11 +216,24 @@ ADMIN_TOKEN               # Shared secret for /orders and /orders/{id}/retry (op
 SHOPIFY_ACCESS_TOKEN      # shpat_... from custom app (required for stock sync)
 SHOPIFY_LOCATION_ID       # Shopify location GID (optional, auto-discovered if unset)
 SYSPRO_WAREHOUSE          # Warehouse code, e.g. "WH01" (required for stock sync)
-SYSPRO_SKUS               # Comma-separated SKUs, e.g. "CBBQ0001,CBBQ0002" (required for stock sync)
+SYSPRO_SKUS               # Comma-separated SKUs (optional; empty triggers dynamic discovery)
+SQLSERVER_DSN             # SQL Server DSN for primary SKU lister, e.g. "sqlserver://user:pw@ril-db01?database=<db>" (optional)
 STOCK_SYNC_INTERVAL       # Default 15m
 BATCH_INTERVAL            # Default 5m
 FULFILMENT_SYNC_INTERVAL  # Default 30m
+RECONCILIATION_INTERVAL   # 0 = disabled; recommended 15m in production
+PAYMENTS_SYNC_INTERVAL    # 0 = disabled; enables the ARSPAY syncer (no-op until XML builder lands)
 LOG_LEVEL                 # debug/info/warn/error
+
+# Daily cash-receipt email (all-or-nothing — leave unset to disable)
+SMTP_HOST                 # e.g. smtp.office365.com
+SMTP_PORT                 # e.g. 587
+SMTP_USERNAME             # optional, AUTH PLAIN
+SMTP_PASSWORD             # optional
+SMTP_FROM                 # envelope from address
+SMTP_USE_TLS              # "true" enables STARTTLS
+CREDIT_CONTROL_TO         # comma-separated recipients
+DAILY_REPORT_HOUR         # UTC hour (0-23), default 7
 
 # Operator-only (not consumed by service, documented for setup)
 VPN_HOST                  # Cisco AnyConnect host

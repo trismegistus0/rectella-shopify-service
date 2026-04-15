@@ -24,7 +24,7 @@ dependencies clear". Critical path notes at the bottom.
 | 5 | Bicep param file pinned to `sha-eba4ab5` | Bast | — | ✅ committed `fbdf7b4` |
 | **In flight — local-side go-live readiness** |||||
 | 6 | Sarah writes SQL query: `SELECT StockCode, QtyOnHand FROM <table> WHERE Warehouse = 'WEBS'` | Sarah | her | ⏳ asked |
-| 7 | New SQL-based lister in service (replaces Shopify-first lister as primary; Shopify-first becomes fallback) | Bast | task 6 + SQL Server creds + driver decision | ⏳ |
+| 7 | New SQL-based lister in service (replaces Shopify-first lister as primary; Shopify-first becomes fallback) | Bast | task 6 + SQL Server creds + driver decision | ✅ code committed `4686691` — runtime verify blocks on RIL-DB01 creds |
 | 8 | Live Shopify Admin API token created in live store custom app | Bast | live store admin access | ⏳ |
 | 9 | Webhook signing secret captured from live store after registering `orders/create` against current Cloudflare tunnel URL | Bast | task 8 | ⏳ |
 | 10 | Local config populated with `SHOPIFY_ACCESS_TOKEN`, `SHOPIFY_STORE_URL`, `SHOPIFY_WEBHOOK_SECRET`, `SYSPRO_WAREHOUSE=WEBS`, leave `SYSPRO_SKUS=` empty | Bast | tasks 8+9 | ⏳ |
@@ -33,7 +33,7 @@ dependencies clear". Critical path notes at the bottom.
 | 13 | Place real test order on live Shopify store with cheapest SKU, watch full flow webhook → DB → batch → SORTOI → real SYSPRO order number | Bast | task 12 | ⏳ |
 | 14 | Sarah confirms the order is correct in SYSPRO + cancels it | Sarah | task 13 | ⏳ |
 | **Payment posting — MVP for go-live (promoted from Phase 2)** |||||
-| 14a | 🆕 **Minimum-viable payment posting: daily Shopify cash-receipt email to credit control.** Scheduled job pulls prior-day paid transactions from Shopify Transactions API, formats a CSV/PDF summary (order ref, gross amount, Shopify fee, net, gateway, processed_at, computed SYSPRO posting period YYYYMM), emails to Rectella credit control. This is the floor — Liz posts cash receipts manually in SYSPRO from the report. Unblocks finance sign-off for launch without full ARSPAY automation. | Bast | Liz email address for credit control + SMTP/outbound email relay credentials | 🆕 |
+| 14a | **Minimum-viable payment posting: daily Shopify cash-receipt email to credit control.** Scheduled job pulls prior-day paid transactions from Shopify Transactions API, formats a CSV summary (order ref, gross amount, Shopify fee, net, gateway, processed_at), emails to Rectella credit control. This is the floor — Liz posts cash receipts manually in SYSPRO from the report. | Bast | Liz credit-control email + SMTP relay creds | ✅ code committed `77a6f54` — disabled until SMTP vars + CREDIT_CONTROL_TO set |
 | **Phase 2 — Azure cutover (parallel with local-side; advances independently)** |||||
 | 15 | Andrew bumps Bast's Azure role to Contributor on whole "Rectella Azure Plan" subscription | Andrew | — | ✅ confirmed working via `az provider register` |
 | 16 | `az provider register --namespace Microsoft.Web` and `--namespace Microsoft.Compute` | Bast | task 15 | ✅ both `Registered` |
@@ -55,7 +55,7 @@ dependencies clear". Critical path notes at the bottom.
 | 28 | Delete the unused `apps-subnet` + `apps-subnet-rt` route table (careful — same route table also attached to app-service-subnet; clone first if needed) | Bast | task 27 | ⏳ |
 | 29 | Stop local service + Cloudflare tunnel, archive logs | Bast | task 26 | ⏳ |
 | **Phase 2 backlog (post-launch)** |||||
-| 30 | ARSPAY automated cash-receipt posting — full automation replacing task 14a. Architecture designed in `arse-pay` branch (see ARSPAY notes below). Polling-cycle syncer posts gross + bank charges per Shopify order; SYSPRO AR module routes bank charges GL automatically. Posting period computed `YYYYMM` from `processed_at`. One cash-book code from Liz (`ARSPAY_CASH_BOOK` env). | Bast + Sarah | Sarah: ARSPAY XML field spec (element names). Liz: `ARSPAY_CASH_BOOK` code + Phase-1 lift (currently out-of-scope in `CLAUDE.md:229`). Shopify Transactions API fetcher + DB migration `002_payment_postings` + `internal/payments/syncer.go` scaffold can be built without either. | 📋 |
+| 30 | ARSPAY automated cash-receipt posting — full automation replacing task 14a. Polling-cycle syncer posts gross + bank charges per Shopify order; SYSPRO AR module routes bank charges GL automatically. Posting period computed `YYYYMM` from `processed_at`. One cash-book code from Liz (`ARSPAY_CASH_BOOK` env). **Scaffold committed `3020e48`:** migration 006, store methods, Shopify transactions fetcher, payments syncer skeleton, SYSPRO `PostCashReceipt` stub returning `ErrCashReceiptNotImplemented`. Syncer disabled unless `PAYMENTS_SYNC_INTERVAL` set and no-op until XML builder lands. | Bast + Sarah | Sarah: ARSPAY XML field spec. Liz: `ARSPAY_CASH_BOOK` code + Phase-1 lift sign-off. | 📋 scaffold ready, XML + approvals pending |
 | 31 | SYSPRO order cancellation handler (Shopify `orders/cancelled` webhook → cancel in SYSPRO) | Bast | scope decision | 📋 |
 | 32 | Gift card handling (non-stocked SORTOI lines) | Bast | Liz approval | 📋 |
 | 33 | Multi-warehouse support if scope changes | Bast | business decision | 📋 |
