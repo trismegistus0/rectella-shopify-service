@@ -28,6 +28,7 @@ type Config struct {
 	BatchInterval          time.Duration
 	FulfilmentSyncInterval time.Duration
 	ReconciliationInterval time.Duration // 0 = disabled
+	PaymentsSyncInterval   time.Duration // 0 = disabled (ARSPAY scaffold only)
 
 	LogLevel slog.Level
 
@@ -138,6 +139,16 @@ func Load() (*Config, error) {
 		c.ReconciliationInterval, err = time.ParseDuration(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid duration for RECONCILIATION_INTERVAL: %w", err)
+		}
+	}
+
+	// Payments sync default is OFF. Setting PAYMENTS_SYNC_INTERVAL starts
+	// the polling loop, but until syspro.PostCashReceipt is implemented
+	// every row stays pending — safe to enable early if desired.
+	if raw := os.Getenv("PAYMENTS_SYNC_INTERVAL"); raw != "" {
+		c.PaymentsSyncInterval, err = time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration for PAYMENTS_SYNC_INTERVAL: %w", err)
 		}
 	}
 

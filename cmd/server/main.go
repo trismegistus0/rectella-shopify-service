@@ -17,6 +17,7 @@ import (
 	"github.com/trismegistus0/rectella-shopify-service/internal/fulfilment"
 	"github.com/trismegistus0/rectella-shopify-service/internal/inventory"
 	"github.com/trismegistus0/rectella-shopify-service/internal/model"
+	"github.com/trismegistus0/rectella-shopify-service/internal/payments"
 	"github.com/trismegistus0/rectella-shopify-service/internal/reconcile"
 	"github.com/trismegistus0/rectella-shopify-service/internal/store"
 	"github.com/trismegistus0/rectella-shopify-service/internal/syspro"
@@ -202,6 +203,27 @@ func run() error {
 		}
 	} else {
 		slog.Info("reconciliation sweep disabled (RECONCILIATION_INTERVAL unset)")
+	}
+
+	// Start payments syncer (ARSPAY). Disabled gracefully if
+	// PAYMENTS_SYNC_INTERVAL unset. The SYSPRO cash-receipt poster is
+	// currently stubbed — rows stay pending until the XML builder lands
+	// and Liz signs off on automated posting.
+	var paymentsCancel context.CancelFunc
+	if cfg.PaymentsSyncInterval > 0 {
+		paymentsSyncer := payments.NewSyncer(
+			db,
+			sysproClient,
+			cfg.PaymentsSyncInterval,
+			"WEBS01",
+			logger,
+		)
+		var paymentsCtx context.Context
+		paymentsCtx, paymentsCancel = context.WithCancel(ctx)
+		defer paymentsCancel()
+		go paymentsSyncer.Run(paymentsCtx)
+	} else {
+		slog.Info("payments sync disabled (PAYMENTS_SYNC_INTERVAL unset)")
 	}
 
 	// Start fulfilment syncer (disabled if SHOPIFY_ACCESS_TOKEN missing).
@@ -391,6 +413,12 @@ func run() error {
 		time.AfterFunc(10*time.Second, fulfilmentCancel)
 	}
 
+	// Drain payments syncer.
+	if paymentsCancel != nil {
+		slog.Info("draining payments syncer (10s grace period)")
+		time.AfterFunc(10*time.Second, paymentsCancel)
+	}
+
 	// Graceful HTTP shutdown with 15s deadline.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -406,6 +434,9 @@ func run() error {
 	}
 	if fulfilmentCancel != nil {
 		fulfilmentCancel()
+	}
+	if paymentsCancel != nil {
+		paymentsCancel()
 	}
 
 	slog.Info("server stopped cleanly")
