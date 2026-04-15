@@ -109,6 +109,7 @@ func run() error {
 		cfg.SysproCompanyID,
 		cfg.SysproCompanyPassword,
 		cfg.SysproWarehouse,
+		cfg.SysproAllocationAction,
 		logger,
 	)
 

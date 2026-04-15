@@ -53,15 +53,16 @@ type sortoiResponse struct {
 // callers (batch processor, stock syncer, fulfilment syncer) cannot evict
 // each other's sessions.
 type EnetClient struct {
-	baseURL         string
-	operator        string
-	password        string
-	companyID       string
-	companyPassword string
-	warehouse       string
-	logger          *slog.Logger
-	httpClient      *http.Client
-	sessionMu       sync.Mutex
+	baseURL          string
+	operator         string
+	password         string
+	companyID        string
+	companyPassword  string
+	warehouse        string
+	allocationAction string
+	logger           *slog.Logger
+	httpClient       *http.Client
+	sessionMu        sync.Mutex
 }
 
 // NewEnetClient constructs a Client backed by the real SYSPRO e.net REST API.
@@ -69,18 +70,21 @@ type EnetClient struct {
 // SYSPRO company-level password and is required for companies that enforce it
 // (e.g. live `RIL`). Pass "" when the target company has no company password.
 // `warehouse` is stamped onto every SORTOI stock line so SYSPRO allocates from
-// the correct warehouse (prevents back-orders when the stock code's default
-// warehouse isn't the web-orders one).
-func NewEnetClient(baseURL, operator, password, companyID, companyPassword, warehouse string, logger *slog.Logger) *EnetClient {
+// the correct warehouse. `allocationAction` tells SYSPRO whether to Ship
+// ("S"), Reserve ("R"), or Back-order ("B") lines at import time — pass "S"
+// for the standard web-orders path. Empty string lets SYSPRO pick its default,
+// which on headless imports is back-order.
+func NewEnetClient(baseURL, operator, password, companyID, companyPassword, warehouse, allocationAction string, logger *slog.Logger) *EnetClient {
 	return &EnetClient{
-		baseURL:         strings.TrimRight(baseURL, "/"),
-		operator:        operator,
-		password:        password,
-		companyID:       companyID,
-		companyPassword: companyPassword,
-		warehouse:       warehouse,
-		logger:          logger,
-		httpClient:      &http.Client{Timeout: 30 * time.Second},
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		operator:         operator,
+		password:         password,
+		companyID:        companyID,
+		companyPassword:  companyPassword,
+		warehouse:        warehouse,
+		allocationAction: allocationAction,
+		logger:           logger,
+		httpClient:       &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -100,12 +104,12 @@ func (c *EnetClient) SubmitSalesOrder(ctx context.Context, order model.Order, li
 		}
 	}()
 
-	paramsXML, dataXML, err := buildSORTOI(order, lines, c.warehouse)
+	paramsXML, dataXML, err := buildSORTOI(order, lines, c.warehouse, c.allocationAction)
 	if err != nil {
 		return nil, fmt.Errorf("building SORTOI XML: %w", err)
 	}
 
-	c.logger.Debug("submitting SORTOI", "order_number", order.OrderNumber, "lines", len(lines), "warehouse", c.warehouse)
+	c.logger.Debug("submitting SORTOI", "order_number", order.OrderNumber, "lines", len(lines), "warehouse", c.warehouse, "allocation_action", c.allocationAction)
 
 	respXML, err := c.transaction(ctx, guid, "SORTOI", paramsXML, dataXML)
 	if err != nil {

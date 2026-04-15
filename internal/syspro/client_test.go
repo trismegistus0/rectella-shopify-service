@@ -522,7 +522,7 @@ func TestParseSORTOI_CleanImportNoOrderElement(t *testing.T) {
 
 // TestNewEnetClient_Interface verifies the constructor satisfies the Client interface.
 func TestNewEnetClient_Interface(t *testing.T) {
-	var _ Client = NewEnetClient("http://example.com", "op", "pw", "co", "", "WEBS", slog.Default())
+	var _ Client = NewEnetClient("http://example.com", "op", "pw", "co", "", "WEBS", "S", slog.Default())
 	// Compile-time check is sufficient; this test documents the guarantee.
 	_ = fmt.Sprintf("%T", NewEnetClient)
 }

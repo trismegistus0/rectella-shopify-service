@@ -51,10 +51,12 @@ func run() error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	ctx := context.Background()
 
-	fmt.Printf("e.net URL:  %s\n", baseURL)
-	fmt.Printf("Operator:   %s\n", operator)
-	fmt.Printf("Company ID: %s\n", companyID)
-	fmt.Printf("PostFlag:   %v\n", addPostFlag)
+	fmt.Printf("e.net URL:     %s\n", baseURL)
+	fmt.Printf("Operator:      %s\n", operator)
+	fmt.Printf("Company ID:    %s\n", companyID)
+	fmt.Printf("Warehouse:     %s\n", warehouse)
+	fmt.Printf("AllocAction:   %s\n", os.Getenv("ALLOC_ACTION"))
+	fmt.Printf("PostFlag:      %v\n", addPostFlag)
 	fmt.Println()
 
 	fmt.Print("Logon... ")
@@ -75,7 +77,22 @@ func run() error {
 
 	poRef := fmt.Sprintf("#TEST-%d", time.Now().Unix())
 
-	paramsXML := `<SalesOrders><Parameters><Process>Import</Process><StatusInProcess>N</StatusInProcess><ValidateOnly>N</ValidateOnly><IgnoreWarnings>W</IgnoreWarnings><ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid><AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered><AllowZeroPrice>Y</AllowZeroPrice>`
+	// Canonical SORTOI params per CyberStore's production template
+	// (https://documentation.cyberstoreforsyspro.com/ecommerce2023/SORTOI-Params.html).
+	// `ApplyIfEntireDocumentValid` intentionally NOT emitted — it's not a real
+	// SORTOI parameter (silently discarded, docs/reports/Claude.md:32).
+	// `AllocationAction` is the field that decides Ship vs Reserve vs Backorder;
+	// override via ALLOC_ACTION env var for iterative probes.
+	allocAction := os.Getenv("ALLOC_ACTION")
+	if allocAction == "" {
+		allocAction = "S"
+	}
+
+	paramsXML := `<SalesOrders><Parameters><Process>Import</Process><StatusInProcess>N</StatusInProcess><ValidateOnly>N</ValidateOnly><IgnoreWarnings>W</IgnoreWarnings>`
+	paramsXML += `<AllocationAction>` + allocAction + `</AllocationAction>`
+	paramsXML += `<AcceptEarlierShipDate>Y</AcceptEarlierShipDate><ShipFromDefaultBin>Y</ShipFromDefaultBin>`
+	paramsXML += `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered><AllowZeroPrice>Y</AllowZeroPrice>`
+	paramsXML += `<AllowDuplicateOrderNumbers>Y</AllowDuplicateOrderNumbers><OrderStatus>1</OrderStatus>`
 	if addPostFlag {
 		paramsXML += `<PostSalesOrders>Y</PostSalesOrders>`
 	}

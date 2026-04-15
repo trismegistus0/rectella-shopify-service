@@ -25,7 +25,7 @@ func TestCashReceipt_PostingPeriod(t *testing.T) {
 
 func TestPostCashReceipt_NotImplemented(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	c := NewEnetClient("http://unused", "op", "pw", "RILT", "", "WEBS", logger)
+	c := NewEnetClient("http://unused", "op", "pw", "RILT", "", "WEBS", "S", logger)
 
 	r := CashReceipt{
 		CustomerCode:  "WEBS01",
@@ -43,7 +43,7 @@ func TestPostCashReceipt_NotImplemented(t *testing.T) {
 
 func TestPostCashReceipt_Validation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	c := NewEnetClient("http://unused", "op", "pw", "RILT", "", "WEBS", logger)
+	c := NewEnetClient("http://unused", "op", "pw", "RILT", "", "WEBS", "S", logger)
 
 	tests := []struct {
 		name string

@@ -10,15 +10,31 @@ import (
 
 // sortoiParams maps to the <SalesOrders><Parameters>...</Parameters></SalesOrders> XML
 // sent as XmlParameters on every SORTOI call.
+//
+// Canonical field set per CyberStore's production SORTOI XSLT template
+// (https://documentation.cyberstoreforsyspro.com/ecommerce2023/SORTOI-Params.html)
+// cross-referenced against `docs/reports/Claude.md:9-30`, which explicitly
+// lists the SORTOI parameter enum and flags `ApplyIfEntireDocumentValid`
+// as NOT a recognised SORTOI parameter (silently discarded — it belongs
+// to SORTBO/INVTMA/CSHTWD/APSSSG). That field is intentionally absent.
+//
+// `AllocationAction` is the field that decides whether a line is Ship,
+// Reserve, or Back-ordered at import time. Without it, SYSPRO's headless
+// default is Back-order, which is exactly the "nothing on back order"
+// failure Sarah flagged against our initial live orders (`docs/Sarah-Latest.md:15`).
 type sortoiParams struct {
 	XMLName                    xml.Name `xml:"SalesOrders"`
 	Process                    string   `xml:"Parameters>Process"`
 	StatusInProcess            string   `xml:"Parameters>StatusInProcess"`
 	ValidateOnly               string   `xml:"Parameters>ValidateOnly"`
 	IgnoreWarnings             string   `xml:"Parameters>IgnoreWarnings"`
-	ApplyIfEntireDocumentValid string   `xml:"Parameters>ApplyIfEntireDocumentValid"`
+	AllocationAction           string   `xml:"Parameters>AllocationAction,omitempty"`
+	AcceptEarlierShipDate      string   `xml:"Parameters>AcceptEarlierShipDate,omitempty"`
+	ShipFromDefaultBin         string   `xml:"Parameters>ShipFromDefaultBin,omitempty"`
 	AlwaysUsePrice             string   `xml:"Parameters>AlwaysUsePriceEntered"`
 	AllowZeroPrice             string   `xml:"Parameters>AllowZeroPrice"`
+	AllowDuplicateOrderNumbers string   `xml:"Parameters>AllowDuplicateOrderNumbers,omitempty"`
+	OrderStatus                string   `xml:"Parameters>OrderStatus,omitempty"`
 }
 
 // sortoiDocument maps to the <SalesOrders><Orders>...</Orders></SalesOrders> XML
@@ -134,17 +150,26 @@ const (
 )
 
 // buildSORTOI produces the two XML strings required by the SORTOI transaction call.
-// `warehouse` is forced onto every line (empty string falls back to stock-code default).
+// `warehouse` is forced onto every stock line (empty string falls back to the
+// stock-code default warehouse). `allocationAction` tells SYSPRO whether a
+// short-of-stock line should ship, reserve, or back-order — pass "S" (Ship)
+// for the common web-orders path where we've already verified on-hand stock
+// via INVQRY. Empty string lets SYSPRO pick its own default, which is
+// back-order on headless imports.
 // Returns (paramsXML, dataXML, error).
-func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse string) (string, string, error) {
+func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocationAction string) (string, string, error) {
 	params := sortoiParams{
 		Process:                    "Import",
 		StatusInProcess:            "N",
 		ValidateOnly:               "N",
 		IgnoreWarnings:             "W",
-		ApplyIfEntireDocumentValid: "Y",
+		AllocationAction:           allocationAction,
+		AcceptEarlierShipDate:      "Y",
+		ShipFromDefaultBin:         "Y",
 		AlwaysUsePrice:             "Y",
 		AllowZeroPrice:             "Y",
+		AllowDuplicateOrderNumbers: "Y",
+		OrderStatus:                "1",
 	}
 	paramsBytes, err := xml.Marshal(params)
 	if err != nil {

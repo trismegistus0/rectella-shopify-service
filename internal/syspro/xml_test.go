@@ -10,7 +10,7 @@ import (
 
 func TestBuildSORTOI_ParamsXML(t *testing.T) {
 	order := minimalOrder()
-	paramsXML, _, err := buildSORTOI(order, nil, "WEBS")
+	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -20,13 +20,34 @@ func TestBuildSORTOI_ParamsXML(t *testing.T) {
 		"<StatusInProcess>N</StatusInProcess>",
 		"<ValidateOnly>N</ValidateOnly>",
 		"<IgnoreWarnings>W</IgnoreWarnings>",
-		"<ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid>",
+		"<AllocationAction>A</AllocationAction>",
+		"<AcceptEarlierShipDate>Y</AcceptEarlierShipDate>",
+		"<ShipFromDefaultBin>Y</ShipFromDefaultBin>",
 		"<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>",
 		"<AllowZeroPrice>Y</AllowZeroPrice>",
+		"<AllowDuplicateOrderNumbers>Y</AllowDuplicateOrderNumbers>",
+		"<OrderStatus>1</OrderStatus>",
 	} {
 		if !strings.Contains(paramsXML, want) {
 			t.Errorf("params XML missing %q\ngot: %s", want, paramsXML)
 		}
+	}
+
+	// ApplyIfEntireDocumentValid is NOT a SORTOI parameter (docs/reports/Claude.md:32).
+	// It must not appear in the rendered XML.
+	if strings.Contains(paramsXML, "ApplyIfEntireDocumentValid") {
+		t.Errorf("params XML contains spurious ApplyIfEntireDocumentValid; got: %s", paramsXML)
+	}
+}
+
+func TestBuildSORTOI_AllocationActionOmittedWhenEmpty(t *testing.T) {
+	order := minimalOrder()
+	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(paramsXML, "<AllocationAction>") {
+		t.Errorf("empty allocationAction should omit the element; got: %s", paramsXML)
 	}
 }
 
@@ -44,7 +65,7 @@ func TestBuildSORTOI_DataXML_HeaderFields(t *testing.T) {
 		ShipPostcode:    "BB10 2TP",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +97,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 		{SKU: "CBBQ0002", Quantity: 1, UnitPrice: 12.50},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +124,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 func TestBuildSORTOI_EmptyAddressOmitted(t *testing.T) {
 	order := minimalOrder()
 	// No address fields set
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +140,7 @@ func TestBuildSORTOI_SpecialCharsEscaped(t *testing.T) {
 	order := minimalOrder()
 	order.ShipAddress1 = `Foo & Bar <Baz> "Qux"`
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +164,7 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 		{SKU: "CBBQ0003", Quantity: 1, UnitPrice: 15.00, Discount: 5.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +198,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 		{SKU: "CBBQ0001", Quantity: 1, UnitPrice: 599.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +218,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
 	order := minimalOrder()
 	// ShippingAmount is zero (default)
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +247,7 @@ func TestBuildSORTOI_TruncatesLongFields(t *testing.T) {
 		ShipPostcode:    "SOME-VERY-LONG-INTERNATIONAL-POSTCODE-12345",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

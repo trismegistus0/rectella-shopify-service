@@ -15,11 +15,12 @@ type Config struct {
 	ShopifyAPISecret     string
 	ShopifyStoreURL      string
 
-	SysproEnetURL         string
-	SysproOperator        string
-	SysproPassword        string
-	SysproCompanyID       string
-	SysproCompanyPassword string
+	SysproEnetURL          string
+	SysproOperator         string
+	SysproPassword         string
+	SysproCompanyID        string
+	SysproCompanyPassword  string
+	SysproAllocationAction string
 
 	DatabaseURL string
 
@@ -112,6 +113,25 @@ func Load() (*Config, error) {
 	c.ShopifyBaseURL = os.Getenv("SHOPIFY_BASE_URL")
 	c.SysproWarehouse = os.Getenv("SYSPRO_WAREHOUSE")
 	c.SQLServerDSN = checkPlaceholder("SQLSERVER_DSN", os.Getenv("SQLSERVER_DSN"))
+
+	// SORTOI <AllocationAction> — primary-source enum confirmed by SYSPRO
+	// itself (tried "S", got: "XML element 'allocationaction' has a value
+	// of 'S'. It should be 'F / B / A'"). Valid values:
+	//   F = Force / Fulfil — most aggressive, still ignored when the
+	//       company-level Back orders preference is set to Manual
+	//   B = Back order — explicit back-order (don't ship)
+	//   A = Auto — let SYSPRO apply its normal allocation rules; honours
+	//       the Setup Options > Preferences > Distribution > Sales Orders
+	//       > Back orders preference
+	// Default "A" is the resilient choice: once Sarah flips the Back
+	// orders preference from Manual to Automatic at company level,
+	// allocation starts working without another code deploy. "F" was
+	// verified to also back-order against a company-preference override,
+	// so it buys us nothing extra.
+	c.SysproAllocationAction = os.Getenv("SYSPRO_ALLOCATION_ACTION")
+	if c.SysproAllocationAction == "" {
+		c.SysproAllocationAction = "A"
+	}
 
 	// Parse comma-separated SKU list.
 	if raw := os.Getenv("SYSPRO_SKUS"); raw != "" {
