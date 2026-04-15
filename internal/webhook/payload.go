@@ -15,6 +15,10 @@ type shopifyOrder struct {
 	ShippingAddress     *shopifyAddress       `json:"shipping_address"`
 	LineItems           []shopifyLineItem     `json:"line_items"`
 	ShippingLines       []shopifyShippingLine `json:"shipping_lines"`
+	// Populated only by orders/cancelled webhooks. Both are absent/empty on
+	// orders/create.
+	CancelledAt  *string `json:"cancelled_at"`
+	CancelReason string  `json:"cancel_reason"`
 }
 
 type shopifyShippingLine struct {

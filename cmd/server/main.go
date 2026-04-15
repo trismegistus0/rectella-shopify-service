@@ -297,6 +297,11 @@ func run() error {
 	wh := webhook.NewHandler(db, cfg.ShopifyWebhookSecret, triggerCh, logger)
 	wh.Register(mux)
 
+	// Cancellation webhook — classify-only gate, no SYSPRO mutation.
+	// Shares the HMAC secret with orders/create.
+	cancelHandler := webhook.NewCancelHandler(db, sysproClient, cfg.ShopifyWebhookSecret, logger)
+	cancelHandler.Register(mux)
+
 	// Admin auth check for operations endpoints.
 	requireAdmin := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

@@ -35,6 +35,47 @@ func (db *DB) WebhookExists(ctx context.Context, webhookID string) (bool, error)
 	return exists, nil
 }
 
+// ErrOrderNotFound is returned when a lookup by shopify_order_id finds
+// no matching row. Callers that expect the order to exist should treat
+// this as a distinct case from a DB error.
+var ErrOrderNotFound = errors.New("order not found")
+
+// GetOrderByShopifyID returns the stored order row matching the given
+// Shopify order ID. Used by the cancellation webhook handler to check
+// whether we have a local record (and thus a syspro_order_number) to
+// classify against. Returns ErrOrderNotFound if no row matches.
+func (db *DB) GetOrderByShopifyID(ctx context.Context, shopifyOrderID int64) (*model.Order, error) {
+	var o model.Order
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, shopify_order_id, order_number, status, customer_account,
+		       ship_first_name, ship_last_name, ship_address1, ship_address2,
+		       ship_city, ship_province, ship_postcode, ship_country,
+		       ship_phone, ship_email,
+		       payment_reference, payment_amount,
+		       COALESCE(syspro_order_number, ''),
+		       attempts, COALESCE(last_error, ''),
+		       order_date, created_at, updated_at
+		FROM orders
+		WHERE shopify_order_id = $1
+	`, shopifyOrderID).Scan(
+		&o.ID, &o.ShopifyOrderID, &o.OrderNumber, &o.Status, &o.CustomerAccount,
+		&o.ShipFirstName, &o.ShipLastName, &o.ShipAddress1, &o.ShipAddress2,
+		&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
+		&o.ShipPhone, &o.ShipEmail,
+		&o.PaymentReference, &o.PaymentAmount,
+		&o.SysproOrderNumber,
+		&o.Attempts, &o.LastError,
+		&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrderNotFound
+		}
+		return nil, fmt.Errorf("fetching order by shopify_order_id: %w", err)
+	}
+	return &o, nil
+}
+
 // ShopifyOrdersExist returns the subset of Shopify order IDs already persisted.
 // Used by the reconciliation sweeper to find gaps in webhook delivery.
 func (db *DB) ShopifyOrdersExist(ctx context.Context, shopifyOrderIDs []int64) (map[int64]bool, error) {
