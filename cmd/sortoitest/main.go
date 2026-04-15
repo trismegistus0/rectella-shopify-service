@@ -34,6 +34,11 @@ func run() error {
 	operator := requireEnv("SYSPRO_OPERATOR")
 	password := os.Getenv("SYSPRO_PASSWORD")
 	companyID := requireEnv("SYSPRO_COMPANY_ID")
+	companyPassword := os.Getenv("SYSPRO_COMPANY_PASSWORD")
+	warehouse := os.Getenv("SYSPRO_WAREHOUSE")
+	if warehouse == "" {
+		warehouse = "WEBS"
+	}
 
 	addPostFlag := false
 	for _, arg := range os.Args[1:] {
@@ -53,7 +58,7 @@ func run() error {
 	fmt.Println()
 
 	fmt.Print("Logon... ")
-	guid, err := logon(ctx, client, baseURL, operator, password, companyID)
+	guid, err := logon(ctx, client, baseURL, operator, password, companyID, companyPassword)
 	if err != nil {
 		return fmt.Errorf("logon failed: %w", err)
 	}
@@ -76,9 +81,10 @@ func run() error {
 	}
 	paramsXML += `</Parameters></SalesOrders>`
 
-	dataXML := fmt.Sprintf(`<SalesOrders><Orders><OrderHeader><CustomerPoNumber>%s</CustomerPoNumber><OrderActionType>A</OrderActionType><Customer>WEBS01</Customer><OrderDate>%s</OrderDate><Email>test@example.com</Email><ShipAddress1>42 Bancroft Road</ShipAddress1><ShipAddress2>Unit 7</ShipAddress2><ShipAddress3>Burnley</ShipAddress3><ShipAddress4>Lancashire</ShipAddress4><ShipAddress5>GB</ShipAddress5><ShipPostalCode>BB10 2TP</ShipPostalCode></OrderHeader><OrderDetails><StockLine><CustomerPoLine>0001</CustomerPoLine><LineActionType>A</LineActionType><StockCode>CBBQ0001</StockCode><OrderQty>1</OrderQty><OrderUom>EA</OrderUom><Price>9.99</Price><PriceUom>EA</PriceUom></StockLine></OrderDetails></Orders></SalesOrders>`,
+	dataXML := fmt.Sprintf(`<SalesOrders><Orders><OrderHeader><CustomerPoNumber>%s</CustomerPoNumber><OrderActionType>A</OrderActionType><Customer>WEBS01</Customer><OrderDate>%s</OrderDate><Email>test@example.com</Email><ShippingInstrs>Standard UK Delivery</ShippingInstrs><ShippingInstrsCod>STANDARD</ShippingInstrsCod><ShipAddress1>Bancroft Road</ShipAddress1><ShipAddress2>Unit 7</ShipAddress2><ShipAddress3>Burnley</ShipAddress3><ShipAddress4>Lancashire</ShipAddress4><ShipAddress5>United Kingdom</ShipAddress5><ShipPostalCode>BB10 2TP</ShipPostalCode></OrderHeader><OrderDetails><StockLine><CustomerPoLine>0001</CustomerPoLine><LineActionType>A</LineActionType><StockCode>BRIQ0152</StockCode><Warehouse>%s</Warehouse><OrderQty>1</OrderQty><OrderUom>EA</OrderUom><Price>8.00</Price><PriceUom>EA</PriceUom></StockLine></OrderDetails></Orders></SalesOrders>`,
 		poRef,
 		time.Now().Format("2006-01-02"),
+		warehouse,
 	)
 
 	fmt.Printf("\n=== SORTOI PARAMS XML ===\n%s\n", paramsXML)
@@ -126,11 +132,12 @@ func run() error {
 	return nil
 }
 
-func logon(ctx context.Context, client *http.Client, baseURL, operator, password, companyID string) (string, error) {
+func logon(ctx context.Context, client *http.Client, baseURL, operator, password, companyID, companyPassword string) (string, error) {
 	params := url.Values{
 		"Operator":         {operator},
 		"OperatorPassword": {password},
 		"CompanyId":        {companyID},
+		"CompanyPassword":  {companyPassword},
 	}
 	body, err := doGet(ctx, client, baseURL+"/Logon", params)
 	if err != nil {
