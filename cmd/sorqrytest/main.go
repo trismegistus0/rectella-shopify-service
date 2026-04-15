@@ -72,8 +72,13 @@ func run() error {
 		}
 	}()
 
-	// Step 2: Query SORQRY
-	xmlIn := fmt.Sprintf(`<Query><Key><SalesOrder>%s</SalesOrder></Key><Option><IncludeStockedLines>N</IncludeStockedLines><IncludeNonStockedLines>N</IncludeNonStockedLines><IncludeFreightLines>N</IncludeFreightLines><IncludeMiscLines>N</IncludeMiscLines><IncludeCommentLines>N</IncludeCommentLines></Option></Query>`, orderNumber)
+	// Step 2: Query SORQRY — default to header-only, but accept INCLUDE_LINES=Y
+	// to also pull stocked / non-stocked / freight lines + totals.
+	includeFlag := "N"
+	if os.Getenv("INCLUDE_LINES") == "Y" {
+		includeFlag = "Y"
+	}
+	xmlIn := fmt.Sprintf(`<Query><Key><SalesOrder>%s</SalesOrder></Key><Option><IncludeStockedLines>%s</IncludeStockedLines><IncludeNonStockedLines>%s</IncludeNonStockedLines><IncludeFreightLines>%s</IncludeFreightLines><IncludeMiscLines>N</IncludeMiscLines><IncludeCommentLines>N</IncludeCommentLines></Option></Query>`, orderNumber, includeFlag, includeFlag, includeFlag)
 
 	fmt.Printf("\nSORQRY request:\n%s\n\n", xmlIn)
 	fmt.Print("Querying SORQRY... ")
