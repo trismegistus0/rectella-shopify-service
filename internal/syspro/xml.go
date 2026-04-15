@@ -53,7 +53,8 @@ type sortoiHeader struct {
 	CustomerPoNumber  string `xml:"CustomerPoNumber"`
 	OrderActionType   string `xml:"OrderActionType"`
 	Customer          string `xml:"Customer"`
-	OrderDate         string `xml:"OrderDate"` // YYYY-MM-DD
+	OrderDate         string `xml:"OrderDate"`         // YYYY-MM-DD
+	RequestedShipDate string `xml:"RequestedShipDate"` // YYYY-MM-DD — Rectella internal reports sort by this
 	Email             string `xml:"Email,omitempty"`
 	ShippingInstrs    string `xml:"ShippingInstrs,omitempty"`    // Carrier from Shopify shipping method
 	ShippingInstrsCod string `xml:"ShippingInstrsCod,omitempty"` // Carrier code if available
@@ -212,6 +213,7 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 				OrderActionType:   "A",
 				Customer:          order.CustomerAccount,
 				OrderDate:         order.OrderDate.Format("2006-01-02"),
+				RequestedShipDate: order.OrderDate.Format("2006-01-02"),
 				Email:             truncate(order.ShipEmail, maxEmail),
 				ShippingInstrs:    truncate(shipTitle, maxShippingInstrs),
 				ShippingInstrsCod: truncate(shipCode, maxShippingInstrsCod),

@@ -71,17 +71,18 @@ func TestBuildSORTOI_DataXML_HeaderFields(t *testing.T) {
 	}
 
 	checks := map[string]string{
-		"CustomerPoNumber": "<CustomerPoNumber>#BBQ1001</CustomerPoNumber>",
-		"OrderActionType":  "<OrderActionType>A</OrderActionType>",
-		"Customer":         "<Customer>WEBS01</Customer>",
-		"OrderDate":        "<OrderDate>2026-02-24</OrderDate>",
-		"Email":            "<Email>john@example.com</Email>",
-		"ShipAddress1":     "<ShipAddress1>42 Bancroft Road</ShipAddress1>",
-		"ShipAddress2":     "<ShipAddress2>Burnley</ShipAddress2>",
-		"ShipAddress3":     "<ShipAddress3>Lancashire</ShipAddress3>",
-		"ShipAddress4":     "<ShipAddress4>England</ShipAddress4>",
-		"ShipAddress5":     "<ShipAddress5>UK</ShipAddress5>",
-		"ShipPostalCode":   "<ShipPostalCode>BB10 2TP</ShipPostalCode>",
+		"CustomerPoNumber":  "<CustomerPoNumber>#BBQ1001</CustomerPoNumber>",
+		"OrderActionType":   "<OrderActionType>A</OrderActionType>",
+		"Customer":          "<Customer>WEBS01</Customer>",
+		"OrderDate":         "<OrderDate>2026-02-24</OrderDate>",
+		"RequestedShipDate": "<RequestedShipDate>2026-02-24</RequestedShipDate>",
+		"Email":             "<Email>john@example.com</Email>",
+		"ShipAddress1":      "<ShipAddress1>42 Bancroft Road</ShipAddress1>",
+		"ShipAddress2":      "<ShipAddress2>Burnley</ShipAddress2>",
+		"ShipAddress3":      "<ShipAddress3>Lancashire</ShipAddress3>",
+		"ShipAddress4":      "<ShipAddress4>England</ShipAddress4>",
+		"ShipAddress5":      "<ShipAddress5>UK</ShipAddress5>",
+		"ShipPostalCode":    "<ShipPostalCode>BB10 2TP</ShipPostalCode>",
 	}
 	for field, want := range checks {
 		if !strings.Contains(dataXML, want) {
