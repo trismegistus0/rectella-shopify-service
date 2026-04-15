@@ -10,6 +10,7 @@
 /enettest
 /sorqrytest
 /sortoitest
+/sku-parity
 
 # Test
 *.test
@@ -37,6 +38,8 @@ scripts/run-history/
 .mcp.json
 .mise.toml
 .playwright-mcp/
+.codex
+.serena/
 
 # PromptFoo — local dev tool, not committed
 promptfoo.yaml
