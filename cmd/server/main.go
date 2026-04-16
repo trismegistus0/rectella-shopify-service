@@ -102,6 +102,7 @@ func run() error {
 	})
 
 	// Instantiate SYSPRO e.net client.
+	taxCodeMap := syspro.ParseTaxCodeMap(cfg.SysproTaxCodeMap)
 	sysproClient := syspro.NewEnetClient(
 		cfg.SysproEnetURL,
 		cfg.SysproOperator,
@@ -110,6 +111,7 @@ func run() error {
 		cfg.SysproCompanyPassword,
 		cfg.SysproWarehouse,
 		cfg.SysproAllocationAction,
+		taxCodeMap,
 		logger,
 	)
 

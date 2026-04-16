@@ -21,6 +21,7 @@ type Config struct {
 	SysproCompanyID        string
 	SysproCompanyPassword  string
 	SysproAllocationAction string
+	SysproTaxCodeMap       string
 
 	DatabaseURL string
 
@@ -131,6 +132,12 @@ func Load() (*Config, error) {
 	c.SysproAllocationAction = os.Getenv("SYSPRO_ALLOCATION_ACTION")
 	if c.SysproAllocationAction == "" {
 		c.SysproAllocationAction = "A"
+	}
+
+	c.SysproTaxCodeMap = os.Getenv("SYSPRO_TAX_CODE_MAP")
+	// Default: Rectella confirmed A=20%, B=5%, Z=0%.
+	if c.SysproTaxCodeMap == "" {
+		c.SysproTaxCodeMap = "0.20:A,0.05:B,0.00:Z"
 	}
 
 	// Parse comma-separated SKU list.

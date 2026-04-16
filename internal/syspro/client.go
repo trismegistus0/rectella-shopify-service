@@ -60,6 +60,7 @@ type EnetClient struct {
 	companyPassword  string
 	warehouse        string
 	allocationAction string
+	taxCodeMap       map[float64]string
 	logger           *slog.Logger
 	httpClient       *http.Client
 	sessionMu        sync.Mutex
@@ -74,7 +75,7 @@ type EnetClient struct {
 // ("S"), Reserve ("R"), or Back-order ("B") lines at import time — pass "S"
 // for the standard web-orders path. Empty string lets SYSPRO pick its default,
 // which on headless imports is back-order.
-func NewEnetClient(baseURL, operator, password, companyID, companyPassword, warehouse, allocationAction string, logger *slog.Logger) *EnetClient {
+func NewEnetClient(baseURL, operator, password, companyID, companyPassword, warehouse, allocationAction string, taxCodeMap map[float64]string, logger *slog.Logger) *EnetClient {
 	return &EnetClient{
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		operator:         operator,
@@ -83,6 +84,7 @@ func NewEnetClient(baseURL, operator, password, companyID, companyPassword, ware
 		companyPassword:  companyPassword,
 		warehouse:        warehouse,
 		allocationAction: allocationAction,
+		taxCodeMap:       taxCodeMap,
 		logger:           logger,
 		httpClient:       &http.Client{Timeout: 30 * time.Second},
 	}
@@ -104,7 +106,7 @@ func (c *EnetClient) SubmitSalesOrder(ctx context.Context, order model.Order, li
 		}
 	}()
 
-	paramsXML, dataXML, err := buildSORTOI(order, lines, c.warehouse, c.allocationAction)
+	paramsXML, dataXML, err := buildSORTOI(order, lines, c.warehouse, c.allocationAction, c.taxCodeMap)
 	if err != nil {
 		return nil, fmt.Errorf("building SORTOI XML: %w", err)
 	}

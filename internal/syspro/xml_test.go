@@ -10,7 +10,7 @@ import (
 
 func TestBuildSORTOI_ParamsXML(t *testing.T) {
 	order := minimalOrder()
-	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "A")
+	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestBuildSORTOI_ParamsXML(t *testing.T) {
 
 func TestBuildSORTOI_AllocationActionOmittedWhenEmpty(t *testing.T) {
 	order := minimalOrder()
-	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "")
+	paramsXML, _, err := buildSORTOI(order, nil, "WEBS", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestBuildSORTOI_DataXML_HeaderFields(t *testing.T) {
 		ShipPostcode:    "BB10 2TP",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 		{SKU: "CBBQ0002", Quantity: 1, UnitPrice: 12.50},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 func TestBuildSORTOI_EmptyAddressOmitted(t *testing.T) {
 	order := minimalOrder()
 	// No address fields set
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBuildSORTOI_SpecialCharsEscaped(t *testing.T) {
 	order := minimalOrder()
 	order.ShipAddress1 = `Foo & Bar <Baz> "Qux"`
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 		{SKU: "CBBQ0003", Quantity: 1, UnitPrice: 15.00, Discount: 5.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 		{SKU: "CBBQ0001", Quantity: 1, UnitPrice: 599.00},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestBuildSORTOI_DataXML_FreightLine(t *testing.T) {
 func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
 	order := minimalOrder()
 	// ShippingAmount is zero (default)
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -234,24 +234,62 @@ func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
 // subtract the per-line tax from the unit price before emitting <Price>.
 // Shopify sends £8.00 gross with £1.33 VAT baked in; SYSPRO's exclusive
 // tax code will add VAT back on top of the net figure we send.
-func TestBuildSORTOI_DataXML_StripsVATWhenInclusive(t *testing.T) {
+func TestBuildSORTOI_DataXML_StripsVATAndSetsTaxCode(t *testing.T) {
 	order := minimalOrder()
-	order.RawPayload = []byte(`{"taxes_included":true}`)
+	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.05}]}]}`)
 	lines := []model.OrderLine{
-		// £8 gross, £1.33 VAT → £6.67 net
-		{SKU: "BRIQ0152", Quantity: 1, UnitPrice: 8.00, Tax: 1.33},
+		// £8 gross, £0.38 VAT (5%) → £7.62 net, tax code B
+		{SKU: "BRIQ0152", Quantity: 1, UnitPrice: 8.00, Tax: 0.38},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(dataXML, "<Price>6.67</Price>") {
-		t.Errorf("expected <Price>6.67</Price> (8.00 - 1.33 VAT); got: %s", dataXML)
+	if !strings.Contains(dataXML, "<Price>7.62</Price>") {
+		t.Errorf("expected <Price>7.62</Price> (8.00 - 0.38 VAT); got: %s", dataXML)
 	}
-	if strings.Contains(dataXML, "<Price>8</Price>") {
-		t.Errorf("data XML should NOT contain gross price 8; got: %s", dataXML)
+	if !strings.Contains(dataXML, "<StockTaxCode>B</StockTaxCode>") {
+		t.Errorf("expected <StockTaxCode>B</StockTaxCode> for 5%% rate; got: %s", dataXML)
+	}
+}
+
+func TestBuildSORTOI_DataXML_TaxCodeA_For20Percent(t *testing.T) {
+	order := minimalOrder()
+	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.20}]}]}`)
+	lines := []model.OrderLine{
+		{SKU: "MBBQ0159", Quantity: 1, UnitPrice: 149.00, Tax: 24.83},
+	}
+
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(dataXML, "<StockTaxCode>A</StockTaxCode>") {
+		t.Errorf("expected <StockTaxCode>A</StockTaxCode> for 20%% rate; got: %s", dataXML)
+	}
+}
+
+func TestBuildSORTOI_DataXML_MixedRateTaxCodes(t *testing.T) {
+	order := minimalOrder()
+	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.05}]},{"tax_lines":[{"rate":0.20}]}]}`)
+	lines := []model.OrderLine{
+		{SKU: "BRIQ0152", Quantity: 1, UnitPrice: 8.00, Tax: 0.38},    // 5% → B
+		{SKU: "MBBQ0159", Quantity: 1, UnitPrice: 149.00, Tax: 24.83}, // 20% → A
+	}
+
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(dataXML, "<StockTaxCode>B</StockTaxCode>") {
+		t.Errorf("expected B for 5%% line; got: %s", dataXML)
+	}
+	if !strings.Contains(dataXML, "<StockTaxCode>A</StockTaxCode>") {
+		t.Errorf("expected A for 20%% line; got: %s", dataXML)
 	}
 }
 
@@ -266,7 +304,7 @@ func TestBuildSORTOI_DataXML_PreservesNetWhenExclusive(t *testing.T) {
 		{SKU: "BRIQ0152", Quantity: 1, UnitPrice: 8.00, Tax: 1.60},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -291,7 +329,7 @@ func TestBuildSORTOI_DataXML_StripsFreightVAT(t *testing.T) {
 		{SKU: "BRIQ0152", Quantity: 1, UnitPrice: 8.00, Tax: 1.33},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +352,7 @@ func TestBuildSORTOI_DataXML_NonTaxableUnchanged(t *testing.T) {
 		{SKU: "EXEMPT0001", Quantity: 2, UnitPrice: 15.00, Tax: 0},
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +373,7 @@ func TestBuildSORTOI_DataXML_MixedTaxableAndExempt(t *testing.T) {
 		{SKU: "EXEMPT0001", Quantity: 1, UnitPrice: 15.00, Tax: 0}, // zero-rated
 	}
 
-	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -386,7 +424,7 @@ func TestBuildSORTOI_TruncatesLongFields(t *testing.T) {
 		ShipPostcode:    "SOME-VERY-LONG-INTERNATIONAL-POSTCODE-12345",
 	}
 
-	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A")
+	_, dataXML, err := buildSORTOI(order, nil, "WEBS", "A", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/trismegistus0/rectella-shopify-service/internal/model"
 )
@@ -82,11 +83,12 @@ type sortoiStockLine struct {
 	CustomerPoLine string  `xml:"CustomerPoLine"`
 	LineActionType string  `xml:"LineActionType"`
 	StockCode      string  `xml:"StockCode"`
-	Warehouse      string  `xml:"Warehouse,omitempty"` // Forces allocation from this warehouse; omitted uses stock code default
+	Warehouse      string  `xml:"Warehouse,omitempty"`
 	OrderQty       int     `xml:"OrderQty"`
 	OrderUom       string  `xml:"OrderUom"`
 	Price          float64 `xml:"Price"`
 	PriceUom       string  `xml:"PriceUom"`
+	TaxCode        string  `xml:"StockTaxCode,omitempty"` // Per-line tax code override — requires "Allow changes to tax code" in Sales Order Setup
 }
 
 // SYSPRO 8 SORTOI field length limits (from sales-orders-reference-guide.pdf).
@@ -194,6 +196,76 @@ func extractShippingTax(rawPayload []byte) float64 {
 	return total
 }
 
+// extractLineRates pulls per-line tax rates from the raw Shopify payload.
+// Returns a map of line index (0-based) → tax rate (e.g. 0.20, 0.05).
+// When a line has multiple tax_lines, uses the first. Returns 0 for
+// non-taxable lines or missing data.
+func extractLineRates(rawPayload []byte) map[int]float64 {
+	if len(rawPayload) == 0 {
+		return nil
+	}
+	var p struct {
+		LineItems []struct {
+			TaxLines []struct {
+				Rate float64 `json:"rate"`
+			} `json:"tax_lines"`
+		} `json:"line_items"`
+	}
+	if err := json.Unmarshal(rawPayload, &p); err != nil {
+		return nil
+	}
+	rates := make(map[int]float64, len(p.LineItems))
+	for i, li := range p.LineItems {
+		if len(li.TaxLines) > 0 {
+			rates[i] = li.TaxLines[0].Rate
+		}
+	}
+	return rates
+}
+
+// taxCodeFromRate maps a Shopify VAT rate to a SYSPRO tax code letter.
+// Uses the taxCodeMap if provided (from SYSPRO_TAX_CODE_MAP env var),
+// otherwise falls back to UK defaults. Returns empty string if no
+// mapping found — SORTOI will use the stock-master default.
+func taxCodeFromRate(rate float64, taxCodeMap map[float64]string) string {
+	if taxCodeMap != nil {
+		if code, ok := taxCodeMap[rate]; ok {
+			return code
+		}
+	}
+	// Rectella confirmed codes: A=20% standard, B=5% reduced, Z=zero-rated
+	switch {
+	case rate >= 0.195 && rate <= 0.205:
+		return "A"
+	case rate >= 0.045 && rate <= 0.055:
+		return "B"
+	case rate < 0.005:
+		return "Z"
+	default:
+		return ""
+	}
+}
+
+// ParseTaxCodeMap parses "0.20:A,0.05:B,0.00:Z" into a rate→code map.
+func ParseTaxCodeMap(s string) map[float64]string {
+	if s == "" {
+		return nil
+	}
+	m := make(map[float64]string)
+	for _, pair := range strings.Split(s, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		rate, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		if err != nil {
+			continue
+		}
+		m[rate] = strings.TrimSpace(parts[1])
+	}
+	return m
+}
+
 // SYSPRO ShippingInstrs XSD limits (from sales-orders-reference-guide).
 const (
 	maxShippingInstrs    = 30
@@ -208,7 +280,7 @@ const (
 // via INVQRY. Empty string lets SYSPRO pick its own default, which is
 // back-order on headless imports.
 // Returns (paramsXML, dataXML, error).
-func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocationAction string) (string, string, error) {
+func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocationAction string, taxCodeMap map[float64]string) (string, string, error) {
 	params := sortoiParams{
 		Process:                    "Import",
 		StatusInProcess:            "N",
@@ -233,10 +305,10 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 	// says prices are inclusive. Absolute subtraction (Shopify already gave
 	// us the tax amount per line) avoids rounding drift from rate-based math.
 	taxesIncluded := extractTaxesIncluded(order.RawPayload)
+	lineRates := extractLineRates(order.RawPayload)
 
 	stockLines := make([]sortoiStockLine, len(lines))
 	for i, l := range lines {
-		// Net price: subtract per-unit discount (Shopify sends total discount across all units).
 		netPrice := l.UnitPrice
 		if l.Discount > 0 && l.Quantity > 0 {
 			netPrice -= l.Discount / float64(l.Quantity)
@@ -244,6 +316,9 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 		if taxesIncluded && l.Tax > 0 && l.Quantity > 0 {
 			netPrice -= l.Tax / float64(l.Quantity)
 		}
+		// Override the SYSPRO tax code per line so SYSPRO applies the
+		// same rate Shopify charged — not whatever the stock-master has.
+		taxCode := taxCodeFromRate(lineRates[i], taxCodeMap)
 		stockLines[i] = sortoiStockLine{
 			CustomerPoLine: fmt.Sprintf("%04d", i+1),
 			LineActionType: "A",
@@ -253,6 +328,7 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 			OrderUom:       "EA",
 			Price:          netPrice,
 			PriceUom:       "EA",
+			TaxCode:        taxCode,
 		}
 	}
 
