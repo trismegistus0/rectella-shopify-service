@@ -59,6 +59,10 @@ func run() error {
 		"log_level", cfg.LogLevel.String(),
 	)
 
+	if cfg.AdminToken == "" {
+		slog.Warn("ADMIN_TOKEN is empty — admin endpoints (/orders, /orders/{id}/retry) are UNAUTHENTICATED")
+	}
+
 	// Connect to database.
 	db, err := store.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -246,25 +250,37 @@ func run() error {
 		slog.Info("daily report disabled (SMTP or CREDIT_CONTROL_TO not configured)")
 	}
 
-	// Start payments syncer (ARSPAY). Disabled gracefully if
-	// PAYMENTS_SYNC_INTERVAL unset. The SYSPRO cash-receipt poster is
-	// currently stubbed — rows stay pending until the XML builder lands
-	// and Liz signs off on automated posting.
+	// Start payments syncer (ARSTPY cash receipts). Requires all three:
+	// PAYMENTS_SYNC_INTERVAL, ARSPAY_CASH_BOOK, ARSPAY_PAYMENT_TYPE.
+	// Disabled gracefully (no error) if any are missing — protects the
+	// live service from booting with half-configured payment posting.
 	var paymentsCancel context.CancelFunc
-	if cfg.PaymentsSyncInterval > 0 {
-		paymentsSyncer := payments.NewSyncer(
-			db,
-			sysproClient,
-			cfg.PaymentsSyncInterval,
-			"WEBS01",
-			logger,
-		)
+	switch {
+	case cfg.PaymentsSyncInterval == 0:
+		slog.Info("payments sync disabled (PAYMENTS_SYNC_INTERVAL unset)")
+	case cfg.ArspayCashBook == "":
+		slog.Warn("payments sync disabled (ARSPAY_CASH_BOOK unset — required when PAYMENTS_SYNC_INTERVAL is set)")
+	case cfg.ArspayPaymentType == "":
+		slog.Warn("payments sync disabled (ARSPAY_PAYMENT_TYPE unset — required when PAYMENTS_SYNC_INTERVAL is set)")
+	default:
+		paymentsSyncer := payments.NewSyncer(payments.SyncerConfig{
+			Store:       db,
+			Poster:      sysproClient,
+			Interval:    cfg.PaymentsSyncInterval,
+			Customer:    "WEBS01",
+			Bank:        cfg.ArspayCashBook,
+			PaymentType: cfg.ArspayPaymentType,
+			Logger:      logger,
+		})
 		var paymentsCtx context.Context
 		paymentsCtx, paymentsCancel = context.WithCancel(ctx)
 		defer paymentsCancel()
 		go paymentsSyncer.Run(paymentsCtx)
-	} else {
-		slog.Info("payments sync disabled (PAYMENTS_SYNC_INTERVAL unset)")
+		slog.Info("payments sync enabled",
+			"interval", cfg.PaymentsSyncInterval,
+			"cashbook", cfg.ArspayCashBook,
+			"payment_type", cfg.ArspayPaymentType,
+		)
 	}
 
 	// Start fulfilment syncer (disabled if SHOPIFY_ACCESS_TOKEN missing).
@@ -413,11 +429,12 @@ func run() error {
 	handler = panicRecovery(handler)
 
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + cfg.Port,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Start server in a goroutine.

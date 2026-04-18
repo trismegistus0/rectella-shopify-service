@@ -228,7 +228,7 @@ func (c *EnetClient) get(ctx context.Context, path string, params url.Values) ([
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10 MB cap
 	if err != nil {
 		return nil, fmt.Errorf("reading response from %s: %w", path, err)
 	}

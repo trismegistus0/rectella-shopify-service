@@ -55,16 +55,32 @@ func (s *fakeStore) MarkPaymentFailed(ctx context.Context, id int64, msg string)
 }
 
 type fakePoster struct {
-	refByID map[int64]string
-	err     error
+	refByID  map[int64]string
+	err      error
+	received []syspro.CashReceipt
 }
 
 func (p *fakePoster) PostCashReceipt(ctx context.Context, r syspro.CashReceipt) (string, error) {
+	p.received = append(p.received, r)
 	if p.err != nil {
 		return "", p.err
 	}
 	// Echo the invoice back as a fake receipt ref.
 	return "REF-" + r.InvoiceNumber, nil
+}
+
+// newSyncer is the test constructor that fills in default Bank +
+// PaymentType so individual tests don't have to repeat them.
+func newSyncer(s PaymentStore, p CashReceiptPoster) *Syncer {
+	return NewSyncer(SyncerConfig{
+		Store:       s,
+		Poster:      p,
+		Interval:    time.Minute,
+		Customer:    "WEBS01",
+		Bank:        "BANK1",
+		PaymentType: "01",
+		Logger:      testLogger(),
+	})
 }
 
 func testLogger() *slog.Logger {
@@ -88,14 +104,15 @@ func samplePayment(id int64, order string) store.PaymentPosting {
 }
 
 func TestSyncer_EmptyPending(t *testing.T) {
-	s := NewSyncer(newFakeStore(), &fakePoster{}, time.Minute, "WEBS01", testLogger())
+	s := newSyncer(newFakeStore(), &fakePoster{})
 	s.cycle(context.Background())
 }
 
 func TestSyncer_HappyPath(t *testing.T) {
 	fs := newFakeStore()
 	fs.pending = []store.PaymentPosting{samplePayment(1, "#BBQ1001"), samplePayment(2, "#BBQ1002")}
-	s := NewSyncer(fs, &fakePoster{}, time.Minute, "WEBS01", testLogger())
+	poster := &fakePoster{}
+	s := newSyncer(fs, poster)
 	s.cycle(context.Background())
 	if len(fs.posted) != 2 {
 		t.Errorf("want 2 posted, got %d", len(fs.posted))
@@ -103,27 +120,28 @@ func TestSyncer_HappyPath(t *testing.T) {
 	if len(fs.failed) != 0 {
 		t.Errorf("want 0 failed, got %d", len(fs.failed))
 	}
-}
-
-func TestSyncer_NotImplementedLeavesPending(t *testing.T) {
-	fs := newFakeStore()
-	fs.pending = []store.PaymentPosting{samplePayment(1, "#BBQ1001")}
-	poster := &fakePoster{err: syspro.ErrCashReceiptNotImplemented}
-	s := NewSyncer(fs, poster, time.Minute, "WEBS01", testLogger())
-	s.cycle(context.Background())
-	if len(fs.posted) != 0 {
-		t.Errorf("want 0 posted, got %d", len(fs.posted))
+	// Verify Bank + PaymentType propagate from syncer config to receipt.
+	if len(poster.received) != 2 {
+		t.Fatalf("want 2 receipts forwarded, got %d", len(poster.received))
 	}
-	if len(fs.failed) != 0 {
-		t.Errorf("NotImplemented should not mark as failed, got %d", len(fs.failed))
+	for _, r := range poster.received {
+		if r.Bank != "BANK1" {
+			t.Errorf("expected Bank=BANK1, got %q", r.Bank)
+		}
+		if r.PaymentType != "01" {
+			t.Errorf("expected PaymentType=01, got %q", r.PaymentType)
+		}
+		if r.CustomerCode != "WEBS01" {
+			t.Errorf("expected CustomerCode=WEBS01, got %q", r.CustomerCode)
+		}
 	}
 }
 
 func TestSyncer_FailureMarksFailed(t *testing.T) {
 	fs := newFakeStore()
 	fs.pending = []store.PaymentPosting{samplePayment(1, "#BBQ1001")}
-	poster := &fakePoster{err: errors.New("ARSPAY rejected: customer unknown")}
-	s := NewSyncer(fs, poster, time.Minute, "WEBS01", testLogger())
+	poster := &fakePoster{err: errors.New("ARSTPY rejected: customer unknown")}
+	s := newSyncer(fs, poster)
 	s.cycle(context.Background())
 	if len(fs.failed) != 1 {
 		t.Errorf("want 1 failed, got %d", len(fs.failed))
@@ -136,7 +154,7 @@ func TestSyncer_FailureMarksFailed(t *testing.T) {
 func TestSyncer_FetchError(t *testing.T) {
 	fs := newFakeStore()
 	fs.fetchErr = errors.New("db down")
-	s := NewSyncer(fs, &fakePoster{}, time.Minute, "WEBS01", testLogger())
+	s := newSyncer(fs, &fakePoster{})
 	s.cycle(context.Background())
 }
 
@@ -148,6 +166,6 @@ func TestSyncer_ContextCanceledMidBatch(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := NewSyncer(fs, &fakePoster{}, time.Minute, "WEBS01", testLogger())
+	s := newSyncer(fs, &fakePoster{})
 	s.cycle(ctx)
 }

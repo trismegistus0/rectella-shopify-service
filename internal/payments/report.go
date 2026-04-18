@@ -9,13 +9,15 @@ import (
 )
 
 // BuildCSV serialises a slice of ShopifyTransaction into a credit-control
-// friendly CSV. Columns match what Liz asked for in the daily email MVP:
-// one row per settled payment, gross + fee + net so credit control can
-// reconcile the bank deposit against the orders it came from.
+// friendly CSV. Columns are exactly what Sarah specified for the
+// Rectella daily report (2026-04-17): one row per settled payment with
+// the four fields credit control needs to post a manual cash receipt
+// in SYSPRO ARSPAY UI.
 //
-// The `date` argument is used only for the header line — the caller is
-// responsible for filtering txns to the correct window.
+// The `date` argument is unused but preserved on the signature for
+// callers that may want to add a column in future or for logging.
 func BuildCSV(date time.Time, txns []ShopifyTransaction) ([]byte, error) {
+	_ = date // intentionally unused — kept for signature stability
 	// Stable ordering: processed_at ascending, then transaction ID.
 	sorted := make([]ShopifyTransaction, len(txns))
 	copy(sorted, txns)
@@ -29,31 +31,24 @@ func BuildCSV(date time.Time, txns []ShopifyTransaction) ([]byte, error) {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	header := []string{
-		"date",
-		"order_number",
-		"customer_email",
-		"gross",
-		"fee",
-		"net",
-		"currency",
-		"processed_at",
-		"payment_gateway",
+		"Shopify Reference",
+		"Order Value",
+		"Charges",
+		"Receipt Value",
 	}
 	if err := w.Write(header); err != nil {
 		return nil, fmt.Errorf("writing csv header: %w", err)
 	}
-	dateStr := date.Format("2006-01-02")
 	for _, t := range sorted {
+		// £ prefix matches Sarah's specified format (e.g.
+		// "#BBQ1001  £8.00  £1.12  £6.88"). Excel renders the cell as
+		// the literal string "£8.00" — credit control can sum the
+		// numeric portion via SUMPRODUCT or by stripping the prefix.
 		row := []string{
-			dateStr,
 			t.OrderNumber,
-			t.CustomerEmail,
-			fmt.Sprintf("%.2f", t.Gross),
-			fmt.Sprintf("%.2f", t.Fee),
-			fmt.Sprintf("%.2f", t.Net),
-			t.Currency,
-			t.ProcessedAt.UTC().Format(time.RFC3339),
-			t.PaymentGateway,
+			fmt.Sprintf("£%.2f", t.Gross),
+			fmt.Sprintf("£%.2f", t.Fee),
+			fmt.Sprintf("£%.2f", t.Net),
 		}
 		if err := w.Write(row); err != nil {
 			return nil, fmt.Errorf("writing csv row: %w", err)

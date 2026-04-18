@@ -13,8 +13,8 @@ func TestBuildCSV_Empty(t *testing.T) {
 		t.Fatalf("BuildCSV: %v", err)
 	}
 	got := string(out)
-	if !strings.HasPrefix(got, "date,order_number,customer_email,gross,fee,net,currency,processed_at,payment_gateway") {
-		t.Errorf("missing or wrong header, got: %q", got)
+	if !strings.HasPrefix(got, "Shopify Reference,Order Value,Charges,Receipt Value") {
+		t.Errorf("missing or wrong header (per Sarah's spec), got: %q", got)
 	}
 	if strings.Count(got, "\n") != 1 {
 		t.Errorf("empty CSV should have exactly 1 line (header), got:\n%s", got)
@@ -39,9 +39,9 @@ func TestBuildCSV_HappyPath(t *testing.T) {
 			ID:             1,
 			OrderNumber:    "#BBQ1001",
 			CustomerEmail:  "a@example.com",
-			Gross:          125.00,
-			Fee:            3.75,
-			Net:            121.25,
+			Gross:          8.00,
+			Fee:            1.12,
+			Net:            6.88,
 			Currency:       "GBP",
 			ProcessedAt:    time.Date(2026, 4, 15, 9, 0, 0, 0, time.UTC),
 			PaymentGateway: "shopify_payments",
@@ -56,14 +56,15 @@ func TestBuildCSV_HappyPath(t *testing.T) {
 		t.Fatalf("want 3 lines (header + 2 rows), got %d:\n%s", len(lines), out)
 	}
 	// Should be sorted by processed_at ascending — #BBQ1001 first.
-	if !strings.Contains(lines[1], "#BBQ1001") {
-		t.Errorf("first data row should be #BBQ1001, got: %s", lines[1])
+	// Sarah's example: "#BBQ1001  £8.00  £1.12  £6.88" — verify
+	// the format matches exactly (£ prefix, 2dp).
+	want1 := "#BBQ1001,£8.00,£1.12,£6.88"
+	if lines[1] != want1 {
+		t.Errorf("row 1 want %q, got %q", want1, lines[1])
 	}
-	if !strings.Contains(lines[2], "#BBQ1002") {
-		t.Errorf("second data row should be #BBQ1002, got: %s", lines[2])
-	}
-	if !strings.Contains(lines[1], "125.00") || !strings.Contains(lines[1], "121.25") {
-		t.Errorf("row 1 missing amounts: %s", lines[1])
+	want2 := "#BBQ1002,£75.00,£2.25,£72.75"
+	if lines[2] != want2 {
+		t.Errorf("row 2 want %q, got %q", want2, lines[2])
 	}
 }
 

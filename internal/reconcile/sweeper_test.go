@@ -225,6 +225,88 @@ func TestNew_DisabledWithoutToken(t *testing.T) {
 	}
 }
 
+// TestSweep_PreservesTaxesIncluded: reconciled orders must preserve taxes_included
+// in RawPayload so that buildSORTOI's extractTaxesIncluded returns true and the
+// VAT strip fires. Without this, reconciled orders send gross prices to SYSPRO
+// causing double-VAT.
+func TestSweep_PreservesTaxesIncluded(t *testing.T) {
+	body := `{
+	  "orders": [
+	    {
+	      "id": 3001,
+	      "name": "#BBQ3001",
+	      "email": "vat@example.com",
+	      "created_at": "2026-04-13T10:00:00Z",
+	      "total_price": "10.00",
+	      "financial_status": "paid",
+	      "taxes_included": true,
+	      "gateway": "shopify_payments",
+	      "line_items": [{"sku": "BRIQ0152", "quantity": 1, "price": "8.00", "total_discount": "0.00", "tax_lines": [{"price": "0.38", "rate": 0.05, "title": "GB VAT"}]}],
+	      "shipping_lines": [{"title": "Standard", "price": "5.99", "tax_lines": [{"price": "1.00", "rate": 0.20, "title": "GB VAT"}]}]
+	    }
+	  ]
+	}`
+	srv := newFakeShopify(t, body)
+	defer srv.Close()
+
+	ms := &mockStore{}
+	sw := New(ms, "ignored", "shpat_test", time.Minute, testLogger(), WithBaseURL(srv.URL))
+
+	if err := sw.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	if len(ms.created) != 1 {
+		t.Fatalf("expected 1 order staged, got %d", len(ms.created))
+	}
+
+	o := ms.created[0]
+
+	// RawPayload must contain taxes_included=true so extractTaxesIncluded works.
+	var raw struct {
+		TaxesIncluded bool `json:"taxes_included"`
+	}
+	if err := json.Unmarshal(o.RawPayload, &raw); err != nil {
+		t.Fatalf("unmarshal RawPayload: %v", err)
+	}
+	if !raw.TaxesIncluded {
+		t.Error("RawPayload missing taxes_included=true — buildSORTOI will skip VAT strip")
+	}
+
+	// RawPayload must contain shipping tax data so extractShippingTax works.
+	var rawShipping struct {
+		ShippingLines []struct {
+			TaxLines []struct {
+				Price string `json:"price"`
+			} `json:"tax_lines"`
+		} `json:"shipping_lines"`
+	}
+	if err := json.Unmarshal(o.RawPayload, &rawShipping); err != nil {
+		t.Fatalf("unmarshal shipping: %v", err)
+	}
+	if len(rawShipping.ShippingLines) == 0 || len(rawShipping.ShippingLines[0].TaxLines) == 0 {
+		t.Error("RawPayload missing shipping_lines[].tax_lines — extractShippingTax will return 0")
+	}
+
+	// Line-item tax data must also be preserved for extractLineRates.
+	var rawLines struct {
+		LineItems []struct {
+			TaxLines []struct {
+				Rate float64 `json:"rate"`
+			} `json:"tax_lines"`
+		} `json:"line_items"`
+	}
+	if err := json.Unmarshal(o.RawPayload, &rawLines); err != nil {
+		t.Fatalf("unmarshal line_items: %v", err)
+	}
+	if len(rawLines.LineItems) == 0 || len(rawLines.LineItems[0].TaxLines) == 0 {
+		t.Error("RawPayload missing line_items[].tax_lines — extractLineRates will return 0")
+	}
+	if rawLines.LineItems[0].TaxLines[0].Rate != 0.05 {
+		t.Errorf("line tax rate = %f, want 0.05", rawLines.LineItems[0].TaxLines[0].Rate)
+	}
+}
+
 // TestSweep_ShopifyErrorSurfaces: non-2xx Shopify response returns an error.
 func TestSweep_ShopifyErrorSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -32,7 +32,19 @@ type Config struct {
 	BatchInterval          time.Duration
 	FulfilmentSyncInterval time.Duration
 	ReconciliationInterval time.Duration // 0 = disabled
-	PaymentsSyncInterval   time.Duration // 0 = disabled (ARSPAY scaffold only)
+	PaymentsSyncInterval   time.Duration // 0 = disabled
+
+	// ARSPAY (cash-receipt posting) configuration. Both required when
+	// PaymentsSyncInterval > 0.
+	//   ArspayCashBook    — SYSPRO cashbook code (e.g. "BANK1") that
+	//                       receives the net of every receipt. Set up
+	//                       in AR Setup → Banks; Liz owns the value.
+	//   ArspayPaymentType — installation-specific payment-method code
+	//                       (e.g. "01" for cheque, "EF" for EFT).
+	//                       Configured in AR Setup → Browse on Payment
+	//                       Codes; Liz/Sarah own the value.
+	ArspayCashBook    string
+	ArspayPaymentType string
 
 	LogLevel slog.Level
 
@@ -57,7 +69,7 @@ type Config struct {
 	SMTPFrom        string
 	SMTPUseTLS      bool
 	CreditControlTo []string
-	DailyReportHour int // UTC, default 7
+	DailyReportHour int // UTC, default 1 (= 01:00 GMT / 02:00 BST — per Sarah's spec)
 }
 
 func Load() (*Config, error) {
@@ -184,14 +196,16 @@ func Load() (*Config, error) {
 	}
 
 	// Payments sync default is OFF. Setting PAYMENTS_SYNC_INTERVAL starts
-	// the polling loop, but until syspro.PostCashReceipt is implemented
-	// every row stays pending — safe to enable early if desired.
+	// the polling loop. ARSPAY_CASH_BOOK and ARSPAY_PAYMENT_TYPE must
+	// also be set or main.go refuses to wire the syncer.
 	if raw := os.Getenv("PAYMENTS_SYNC_INTERVAL"); raw != "" {
 		c.PaymentsSyncInterval, err = time.ParseDuration(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid duration for PAYMENTS_SYNC_INTERVAL: %w", err)
 		}
 	}
+	c.ArspayCashBook = os.Getenv("ARSPAY_CASH_BOOK")
+	c.ArspayPaymentType = os.Getenv("ARSPAY_PAYMENT_TYPE")
 
 	// Daily cash-receipt email config. All-or-nothing: if any SMTP
 	// field is set but not all, we still load — the daily report
@@ -217,7 +231,7 @@ func Load() (*Config, error) {
 			}
 		}
 	}
-	c.DailyReportHour = 7
+	c.DailyReportHour = 1
 	if h := os.Getenv("DAILY_REPORT_HOUR"); h != "" {
 		n, err := strconv.Atoi(h)
 		if err != nil || n < 0 || n > 23 {

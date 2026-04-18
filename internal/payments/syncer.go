@@ -2,7 +2,6 @@ package payments
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -26,36 +25,46 @@ type CashReceiptPoster interface {
 }
 
 // Syncer polls payment_postings for rows in `pending` status and calls
-// SYSPRO ARSPAY to turn them into cash receipts. Mirrors the structure
+// SYSPRO ARSTPY to turn them into cash receipts. Mirrors the structure
 // of internal/inventory/syncer.go: interval ticker, single-flight
 // guard, 3-minute per-cycle timeout.
-//
-// Until the ARSPAY XML builder lands the poster will return
-// syspro.ErrCashReceiptNotImplemented. The syncer treats that sentinel
-// as "not yet, leave it alone" — the row stays `pending` and the
-// attempt counter does not increment. Once the builder is implemented
-// the feature flag flips and the same rows will drain on the next tick.
 type Syncer struct {
-	store     PaymentStore
-	poster    CashReceiptPoster
-	interval  time.Duration
-	batchSize int
-	customer  string
-	logger    *slog.Logger
+	store       PaymentStore
+	poster      CashReceiptPoster
+	interval    time.Duration
+	batchSize   int
+	customer    string
+	bank        string
+	paymentType string
+	logger      *slog.Logger
 
 	syncMu sync.Mutex
 }
 
-// NewSyncer builds a payments syncer. `customer` is the SYSPRO customer
-// code (always "WEBS01" for Phase 1).
-func NewSyncer(store PaymentStore, poster CashReceiptPoster, interval time.Duration, customer string, logger *slog.Logger) *Syncer {
+// SyncerConfig bundles required + optional inputs for NewSyncer. Bank
+// and PaymentType are SYSPRO installation values (cashbook code +
+// payment-method code) that must be set on every ARSTPY post.
+type SyncerConfig struct {
+	Store       PaymentStore
+	Poster      CashReceiptPoster
+	Interval    time.Duration
+	Customer    string // SYSPRO customer (always "WEBS01" for Phase 1)
+	Bank        string // ARSPAY_CASH_BOOK
+	PaymentType string // ARSPAY_PAYMENT_TYPE
+	Logger      *slog.Logger
+}
+
+// NewSyncer builds a payments syncer.
+func NewSyncer(cfg SyncerConfig) *Syncer {
 	return &Syncer{
-		store:     store,
-		poster:    poster,
-		interval:  interval,
-		batchSize: 50,
-		customer:  customer,
-		logger:    logger,
+		store:       cfg.Store,
+		poster:      cfg.Poster,
+		interval:    cfg.Interval,
+		batchSize:   50,
+		customer:    cfg.Customer,
+		bank:        cfg.Bank,
+		paymentType: cfg.PaymentType,
+		logger:      cfg.Logger,
 	}
 }
 
@@ -99,7 +108,7 @@ func (s *Syncer) cycle(ctx context.Context) {
 	}
 	s.logger.Info("payments cycle starting", "pending", len(rows))
 
-	var posted, skipped, failed int
+	var posted, failed int
 	for _, p := range rows {
 		if err := ctx.Err(); err != nil {
 			s.logger.Info("payments cycle aborted", "error", err)
@@ -108,6 +117,8 @@ func (s *Syncer) cycle(ctx context.Context) {
 
 		receipt := syspro.CashReceipt{
 			CustomerCode:  s.customer,
+			Bank:          s.bank,
+			PaymentType:   s.paymentType,
 			InvoiceNumber: p.OrderNumber,
 			Amount:        p.GrossAmount,
 			BankCharges:   p.FeeAmount,
@@ -116,8 +127,7 @@ func (s *Syncer) cycle(ctx context.Context) {
 			PostedAt:      p.ProcessedAt,
 		}
 		ref, err := s.poster.PostCashReceipt(ctx, receipt)
-		switch {
-		case err == nil:
+		if err == nil {
 			if mErr := s.store.MarkPaymentPosted(ctx, p.ID, ref); mErr != nil {
 				s.logger.Error("marking payment posted", "id", p.ID, "error", mErr)
 				failed++
@@ -130,29 +140,20 @@ func (s *Syncer) cycle(ctx context.Context) {
 				"gross", p.GrossAmount,
 				"syspro_ref", ref,
 			)
-		case errors.Is(err, syspro.ErrCashReceiptNotImplemented):
-			// Feature flag is off. Leave the row pending, don't count
-			// it as a failure. Emit once per cycle (not per row) so
-			// logs don't flood while scaffolded.
-			skipped++
-		default:
-			if mErr := s.store.MarkPaymentFailed(ctx, p.ID, err.Error()); mErr != nil {
-				s.logger.Error("marking payment failed", "id", p.ID, "error", mErr)
-			}
-			failed++
-			s.logger.Warn("payment post failed",
-				"id", p.ID,
-				"order_number", p.OrderNumber,
-				"error", err,
-			)
+			continue
 		}
-	}
-	if skipped > 0 {
-		s.logger.Info("payments sync skipped (ARSPAY not implemented)", "skipped", skipped)
+		if mErr := s.store.MarkPaymentFailed(ctx, p.ID, err.Error()); mErr != nil {
+			s.logger.Error("marking payment failed", "id", p.ID, "error", mErr)
+		}
+		failed++
+		s.logger.Warn("payment post failed",
+			"id", p.ID,
+			"order_number", p.OrderNumber,
+			"error", err,
+		)
 	}
 	s.logger.Info("payments cycle complete",
 		"posted", posted,
-		"skipped", skipped,
 		"failed", failed,
 	)
 }

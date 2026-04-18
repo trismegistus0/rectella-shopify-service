@@ -39,6 +39,9 @@ param sysproPassword string
 
 param sysproCompanyId string
 
+@secure()
+param sysproCompanyPassword string = ''
+
 param sysproWarehouse string = ''
 
 param sysproSkus string = ''
@@ -78,8 +81,8 @@ resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: 'rectella-plan'
   location: location
   sku: {
-    name: 'B1'
-    tier: 'Basic'
+    name: 'S1'
+    tier: 'Standard'
   }
   kind: 'linux'
   properties: {
@@ -120,6 +123,7 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'SYSPRO_OPERATOR', value: sysproOperator }
         { name: 'SYSPRO_PASSWORD', value: sysproPassword }
         { name: 'SYSPRO_COMPANY_ID', value: sysproCompanyId }
+        { name: 'SYSPRO_COMPANY_PASSWORD', value: sysproCompanyPassword }
         { name: 'SYSPRO_WAREHOUSE', value: sysproWarehouse }
         { name: 'SYSPRO_SKUS', value: sysproSkus }
         { name: 'ADMIN_TOKEN', value: adminToken }
@@ -138,4 +142,5 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
 // ---- Outputs ----
 
 output webAppHostname string = webApp.properties.defaultHostName
-output webhookUrl string = 'https://${webApp.properties.defaultHostName}/webhooks/orders/create'
+output webhookOrdersCreateUrl string = 'https://${webApp.properties.defaultHostName}/webhooks/orders/create'
+output webhookOrdersCancelledUrl string = 'https://${webApp.properties.defaultHostName}/webhooks/orders/cancelled'

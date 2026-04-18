@@ -205,7 +205,7 @@ func (s *Sweeper) listOrders(ctx context.Context, since time.Time) ([]shopifyOrd
 	q.Set("status", "any")
 	q.Set("created_at_min", since.Format(time.RFC3339))
 	q.Set("limit", "250")
-	q.Set("fields", "id,name,email,created_at,total_price,financial_status,shipping_address,line_items,shipping_lines,gateway,payment_gateway_names")
+	q.Set("fields", "id,name,email,created_at,total_price,financial_status,taxes_included,shipping_address,line_items,shipping_lines,gateway,payment_gateway_names")
 
 	reqURL := s.resolveBaseURL() + "/orders.json?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -279,6 +279,7 @@ type shopifyOrder struct {
 	CreatedAt           string                `json:"created_at"`
 	TotalPrice          string                `json:"total_price"`
 	FinancialStatus     string                `json:"financial_status"`
+	TaxesIncluded       bool                  `json:"taxes_included"`
 	Gateway             string                `json:"gateway"`
 	PaymentGatewayNames []string              `json:"payment_gateway_names"`
 	ShippingAddress     *shopifyAddress       `json:"shipping_address"`
@@ -313,8 +314,9 @@ type shopifyTax struct {
 }
 
 type shopifyShippingLine struct {
-	Title string `json:"title"`
-	Price string `json:"price"`
+	Title    string       `json:"title"`
+	Price    string       `json:"price"`
+	TaxLines []shopifyTax `json:"tax_lines"`
 }
 
 func (so shopifyOrder) toDomain() (model.Order, []model.OrderLine) {

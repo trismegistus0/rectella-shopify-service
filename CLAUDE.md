@@ -16,25 +16,35 @@ Sebastian is building this service and learning Go, testing patterns, and produc
 
 Rectella (Burnley, Lancashire) manufactures BBQ/grilling products under the **Bar-Be-Quick** brand. B2C Shopify site integrating with SYSPRO ERP.
 
+- Live store: **barbequick.co.uk** (Shopify: `h0snak-s5.myshopify.com`)
 - ~40 stocked SKUs at launch (confirmed by Clare, up from initial estimate of 13)
 - All orders post to single SYSPRO customer account `WEBS01`
-- Single warehouse (TBD), Shopify controls pricing in Phase 1
+- Single warehouse `WEBS`, Shopify controls pricing
 
-### Data Flows (Phase 1)
+### Data Flows
 
 1. **Orders IN** (Shopify → Service → SYSPRO): Webhook-driven, staged in PostgreSQL, batch-submitted via `SORTOI`
-2. **Stock sync OUT** (SYSPRO → Service → Shopify): Scheduled cron sync from single warehouse
-3. **Shipment status BACK** (SYSPRO → Service → Shopify): Fulfilment status updates
+2. **Stock sync OUT** (SYSPRO → Service → Shopify): Scheduled sync from WEBS warehouse every 15m
+3. **Shipment status BACK** (SYSPRO → Service → Shopify): Fulfilment status updates every 30m
 
 ## Build & Run
 
 ```bash
-# Start PostgreSQL (uses network_mode: host to avoid Docker iptables issues)
+# Start PostgreSQL (network_mode: host, listen_addresses=localhost for security)
 docker compose up -d
 
-# Load env and run
-export $(grep -v '^#' .env | xargs)
-go run ./cmd/server
+# Build and run (production — compiled binary)
+go build -o ./rectella-service ./cmd/server
+./rectella-service      # requires env vars loaded
+
+# Or use the helper script (loads env, builds, runs)
+./scripts/run.sh
+
+# systemd (production — auto-restart on crash)
+systemctl --user start rectella     # start
+systemctl --user stop rectella      # stop
+systemctl --user status rectella    # check
+journalctl --user -u rectella -f   # tail logs
 
 # Build / test / lint
 go build ./...
@@ -48,11 +58,12 @@ gofmt -l .
 ./scripts/pipeline.sh --live        # Real SYSPRO over VPN, mock Shopify
 
 # Helper scripts
-./scripts/run.sh         # Start PostgreSQL + load .env + run service
+./scripts/run.sh         # Start PostgreSQL + build binary + load env + run service
 ./scripts/check.sh       # Build + vet + fmt + all tests (unit + integration)
 ./scripts/test.sh        # Manual smoke test against running instance (legacy)
 ./scripts/reset.sh       # Truncate all tables (keep schema)
-./scripts/nuke.sh        # Destroy DB volume + recreate from scratch
+./scripts/nuke.sh        # Destroy DB volume + recreate from scratch (requires confirmation)
+./scripts/backup.sh      # pg_dump to ~/backups/rectella/ (30-day retention)
 ./scripts/vpn.sh         # VPN up|down|status|test|fix-hosts (mullvad-exclude + openconnect)
 ./scripts/vpn-monitor.sh # Self-healing VPN health check (run via cron or manually)
 ./scripts/probe-enet.sh  # Probe RIL-APP01 for e.net port (run once, VPN required)
@@ -66,6 +77,9 @@ cmd/enettest/main.go                # SYSPRO e.net connectivity test (logon/logo
 cmd/sortoitest/main.go              # SORTOI test tool — submit test order to SYSPRO, dump raw response
 cmd/sorqrytest/main.go              # SORQRY/INVQRY test tool — query order/stock, dump raw response
 cmd/pipeline-test/                   # Visual pipeline test (mock SYSPRO + mock Shopify, fully self-contained)
+cmd/sku-parity/                      # SKU parity audit: Shopify variants vs SYSPRO stock codes
+cmd/benchmark/                       # Load testing tool
+cmd/invbrwtest/                      # INVBRW business object probe (ruled out for stock sync)
 internal/
   batch/
     processor.go                    # Batch processor: polling loop, SYSPRO submission, error handling
@@ -73,129 +87,150 @@ internal/
   model/order.go                    # Domain types: Order, OrderLine, OrderWithLines, WebhookEvent
   store/
     store.go                        # DB connection pool (pgxpool)
-    migrate.go                      # Embedded SQL migrations
-    order.go                        # WebhookExists, CreateOrder, FetchPendingOrders, UpdateOrderStatus, ListOrdersByStatus, FetchReservedQuantities
-    migrations/
-      001_initial_schema.up.sql     # webhook_events, orders, order_lines tables
-      001_initial_schema.down.sql   # Drop tables
+    migrate.go                      # Embedded SQL migrations (advisory lock, idempotent)
+    order.go                        # WebhookExists, CreateOrder, FetchPendingOrders, UpdateOrderStatus, etc.
+    migrations/                     # 7 migration pairs (001-007)
   syspro/
-    client.go                       # Client interface + EnetClient (logon/transaction/query/logoff)
+    client.go                       # Client interface + EnetClient (logon/transaction/query/logoff, 10MB cap)
     session.go                      # Session interface + enetSession (batched order submission)
     inventory.go                    # INVQRY XML builder + response parser + QueryStock()
-    xml.go                          # SORTOI XML builder (sortoiParams, sortoiDocument)
-    client_test.go                  # httptest-based client tests (incl. /Query/Query)
-    inventory_test.go               # INVQRY XML + QueryStock tests
-    session_test.go                 # Session lifecycle tests (open/submit/reuse/close)
-    xml_test.go                     # XML builder unit tests
+    sorqry.go                       # SORQRY dispatch status query
+    xml.go                          # SORTOI XML builder (VAT strip, StockTaxCode, freight, truncation)
+    cash_receipt.go                 # ARSPAY cash receipt types + stub
+    *_test.go                       # Full test coverage for all above
   inventory/
     syncer.go                       # Stock sync orchestrator: polling, debounce, order-aware adjustments
     shopify.go                      # Shopify GraphQL client: location/SKU discovery, SetInventoryLevels
-    syncer_test.go                  # 10 syncer unit tests (mock querier/pusher/store)
-    shopify_test.go                 # 7 Shopify client httptest tests
+    sqlserver_lister.go             # SQL Server SKU lister (Sarah's bq_WEBS_Whs_QoH view)
+    *_test.go                       # 17 tests across syncer + shopify client
   fulfilment/
     syncer.go                       # Fulfilment sync: polls SORQRY, creates Shopify fulfilments
     shopify.go                      # Shopify GraphQL client: GetFulfillmentOrderID, CreateFulfillment
-    syncer_test.go                  # 11 syncer unit tests (mock querier/pusher/store)
-    shopify_test.go                 # 8 Shopify fulfilment client httptest tests
+    *_test.go                       # 19 tests across syncer + shopify client
+  cancellation/
+    classifier.go                   # 6-disposition classification based on SORQRY state
   webhook/
     handler.go                      # POST /webhooks/orders/create — OrderStore interface + stock sync trigger
+    cancel_handler.go               # POST /webhooks/orders/cancelled — classify-only gate
     payload.go                      # Unexported Shopify JSON DTOs
     verify.go                       # HMAC-SHA256 verification
-    handler_test.go                 # 11 table-driven handler tests (mock store)
-    verify_test.go                  # 5 table-driven HMAC tests
+    *_test.go                       # 16 tests: handler + HMAC + financial-status gate
     testdata/order_create.json      # Realistic BBQ order fixture
+  reconcile/
+    sweeper.go                      # Shopify Admin REST reconciliation (48h lookback, taxes_included preserved)
+    sweeper_test.go                 # 7 tests: stage missing, skip existing/unpaid, VAT preservation, errors
+  payments/
+    syncer.go                       # ARSPAY polling syncer (scaffold, no-ops until XML builder lands)
+    shopify_transactions.go         # Shopify Admin REST transaction fetcher
+    report.go                       # Daily cash-receipt CSV report
+    mailer.go                       # SMTP + STARTTLS mailer with MIME attachments
+    daily_report.go                 # Scheduled daily report job
   integration/
     testhelper_test.go              # Shared test setup: Postgres container, mock SYSPRO, HTTP server
     pipeline_test.go                # 16 integration tests: webhook, pipeline, orders, health
-config/config.go                    # Env var loading + validation
+config/config.go                    # Env var loading + validation (PLACEHOLDER guard, tax code map)
 scripts/
-  run.sh                            # Start PostgreSQL + service
+  run.sh                            # Start PostgreSQL + build binary + run
   check.sh                          # Build + vet + fmt + all tests (unit + integration)
   test.sh                           # Manual smoke test against running instance (legacy)
   reset.sh                          # Truncate tables
-  nuke.sh                           # Destroy + recreate DB
+  nuke.sh                           # Destroy + recreate DB (requires confirmation)
+  backup.sh                         # pg_dump to ~/backups/rectella/ (30-day retention)
+  wait-postgres.sh                  # PostgreSQL readiness check (for systemd)
+  pipeline.sh                       # Self-contained pipeline test (mock SYSPRO + real Postgres)
   vpn.sh                            # Rectella VPN connect/disconnect (mullvad-exclude + openconnect)
   vpn-monitor.sh                    # Self-healing VPN health monitor (6 checks, auto-heals 4)
   probe-enet.sh                     # e.net port discovery (candidate port probing)
+  rectella.service                  # systemd user unit (Restart=on-failure)
+  rectella-backup.service           # systemd oneshot for pg_dump
+  rectella-backup.timer             # systemd timer (every 6 hours)
   run-history/                      # Timestamped test run logs (gitignored)
 docs/                               # Reference docs: emails, SOW, SYSPRO training (not code)
 Dockerfile                          # Multi-stage Go build (non-root, Alpine)
-docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
-.env                                # Local config (gitignored)
-.env.example                        # Template
+docker-compose.yml                  # PostgreSQL 16 (network_mode: host, listen_addresses=localhost)
 ```
 
 ## What's Built
 
 - **Webhook handler**: Receives `orders/create` webhooks, verifies HMAC-SHA256, deduplicates via `X-Shopify-Webhook-Id`, validates, maps to domain types, persists in single transaction. Financial-status gate rejects unpaid / pending / authorized / refunded / voided orders at the door (returns HTTP 200 with `skipped_unpaid` so Shopify doesn't retry).
-- **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation (handles race conditions)
-- **Database**: PostgreSQL with embedded migrations, connection pooling (pgx/v5)
+- **Idempotency**: Two layers — `WebhookExists` check + `ErrDuplicateWebhook` sentinel on PG unique violation. Additional `ErrDuplicateOrder` on `shopify_order_id` collision.
+- **Database**: PostgreSQL with embedded migrations (advisory-lock protected), connection pooling (pgx/v5), 7 migration files
 - **Health endpoints**: `GET /health` (DB ping, no error leak), `GET /ready`
-- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `EnetClient` (GET-based logon/transaction/query/logoff on port 31002), SORTOI XML builder with net price calculation + atomicity (`ApplyIfEntireDocumentValid`), INVQRY XML builder + response parser + `QueryStock()`, SORQRY dispatch status query, Windows-1252 response handling, session mutex for single-operator concurrency; verified end-to-end against SYSPRO test company `RILT` (orders 015562–015566)
+- **HTTP server hardening**: `ReadHeaderTimeout` (slowloris prevention), `ReadTimeout`, `WriteTimeout`, `IdleTimeout`. Panic recovery middleware, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`), request logging (method, path, status, duration, webhook_id). ADMIN_TOKEN empty warning at boot.
+- **SYSPRO e.net client** (`internal/syspro/`): `Client` interface, `EnetClient` (GET-based logon/transaction/query/logoff on port 31002), SORTOI XML builder with VAT strip + per-line StockTaxCode override + net price calculation + canonical param set (AllocationAction, AcceptEarlierShipDate, ShipFromDefaultBin, AllowDuplicateOrderNumbers, OrderStatus, RequestedShipDate), INVQRY XML builder + response parser + `QueryStock()`, SORQRY dispatch status query, Windows-1252 response handling, session mutex for single-operator concurrency, optional `CompanyPassword` for live companies, 10MB response body size cap. Operator login rejects any GUID prefixed `ERROR`.
+- **VAT handling** (`internal/syspro/xml.go`): Per-line VAT strip + StockTaxCode override. When Shopify sends `taxes_included=true` (UK standard), the middleware subtracts the absolute per-line tax from the gross price before emitting `<Price>` to SORTOI. Each line also gets a `<StockTaxCode>` override (A=20% standard, B=5% reduced/domestic fuel, Z=0% zero-rated) derived from Shopify's `tax_lines[].rate`. Same treatment for freight: `<FreightValue>` is net of shipping tax. Configurable via `SYSPRO_TAX_CODE_MAP` env var. Requires "Allow changes to tax code for stocked items" enabled in SYSPRO Sales Order Setup > Tax/Um tab. Verified end-to-end via 3 real Playwright checkout orders (orders 016031-016033).
+- **Field truncation** (`internal/syspro/xml.go`): `truncate()` helper enforces SYSPRO XSD byte limits on CustomerPoNumber (30), address lines (40), postcode (15), email (80).
 - **VPN tooling** (`scripts/`): `vpn.sh` (connect/disconnect/test with Mullvad coexistence), `vpn-monitor.sh` (self-healing health monitor), DNS routing fix, managed `/etc/hosts` entries for RIL-APP01/RIL-DB01
-- **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard prevents overlapping batches. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
-- **Duplicate prevention**: Atomic `pending → processing` status transition before SYSPRO call + `syspro_order_number` stored on success for reconciliation
+- **Batch processor** (`internal/batch/`): Polls for pending orders, opens single SYSPRO session per batch, submits sequentially. Business errors mark `failed` and continue; infra errors stop batch. Dead-letters after 3 attempts. Single-flight guard. Per-batch 5-minute timeout. Graceful 10s drain on shutdown.
+- **Boot-time crash recovery**: `ResetStaleProcessing` sweep on startup flips orders stuck in `processing` for >10 minutes back to `pending`.
+- **Duplicate prevention**: Atomic `pending -> processing` status transition before SYSPRO call + `syspro_order_number` stored on success
 - **GET /orders?status=** endpoint: Operations visibility into order statuses (admin-token protected)
 - **POST /orders/{id}/retry** endpoint: Re-queue failed/dead-lettered orders (admin-token protected)
-- **Middleware**: Panic recovery, security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`), request logging (method, path, status, duration, webhook_id)
 - **Dockerfile**: Multi-stage Go build, non-root user, Alpine-based
-- **Stock sync** (`internal/inventory/`): One-way SYSPRO → Shopify inventory sync. Polls SYSPRO INVQRY every 15m, subtracts pending/processing order quantities, clamps to 0, pushes via Shopify GraphQL `inventorySetQuantities`. Webhook-triggered 2-second debounced sync for near-instant updates. Lazy Shopify location/SKU discovery with caching. Single-flight guard, 3-minute per-cycle timeout, 10-second per-query timeout, consecutive failure tracking, graceful shutdown. Disabled gracefully if `SYSPRO_SKUS` unconfigured.
-- **Fulfilment sync** (`internal/fulfilment/`): Polls SYSPRO SORQRY every 30m for submitted orders with status "9" (complete). Creates Shopify fulfilments via GraphQL `fulfillmentCreate` mutation with tracking info (carrier from SYSPRO `ShippingInstrs`). Updates order status to `fulfilled` with Shopify fulfilment GID. Handles already-fulfilled idempotently. Single-flight guard, 3-minute per-cycle timeout, graceful 10s drain on shutdown. Disabled if `SHOPIFY_ACCESS_TOKEN` missing.
-- **Reconciliation sweeper** (`internal/reconcile/`): Optional daily poll of Shopify Admin REST API (`GET /orders.json?created_at_min=...`) to catch orders missed by webhook delivery (48h retry window). Diffs against the local `orders` table via `ShopifyOrdersExist` and stages any gaps through the normal `CreateOrder` path, applying the same financial-status filter. Disabled by default (`RECONCILIATION_INTERVAL` env var), enable with e.g. `RECONCILIATION_INTERVAL=24h`.
-- **Secret validation**: `config.Load()` refuses to boot on empty required vars OR values starting with `PLACEHOLDER` (guards against Bicep `readEnvironmentVariable` silent-empty footgun).
-- **Graceful drain invariant**: Batch processor checks `ctx.Err()` between orders, so SIGTERM during shutdown never leaves an order stuck in `processing`. In-flight SORTOI call completes; subsequent orders stay `pending` for next cycle.
-- **SKU parity audit tool** (`cmd/sku-parity/`): CLI that fetches all Shopify product variants via Admin REST (cursor paginated), compares against a SYSPRO stock-code list, prints matches / Shopify-only (dangerous) / SYSPRO-only, and exits non-zero if any Shopify SKU is missing from SYSPRO. Pre-go-live sanity check.
-- **Operator runbook** (`docs/runbook.md`): Single-page playbook for ops handover covering order status queries, retry, rollback, common incidents (VPN down, HMAC mismatch, stuck `processing`, clean-import traceability), known limitations, and escalation contacts.
-- **Shipping/freight**: Parses `shipping_lines` from Shopify webhooks, sums into `shipping_amount` on the order. SORTOI XML builder emits `<FreightLine>` with `<FreightValue>` and `<FreightCost>` when shipping > 0. Zero shipping = no freight line emitted.
-- **Tests**: ~130 unit tests (webhook handler + HMAC + financial-status gate + SYSPRO client/INVQRY/SORQRY + XML builder + session + batch processor + graceful-drain invariant + Shopify inventory client + inventory syncer + Shopify fulfilment client + fulfilment syncer + reconciliation sweeper + config + PLACEHOLDER validation) + 16 Go integration tests (`internal/integration/`, `//go:build integration`) covering full pipeline: webhook → DB → batch → orders endpoint. Uses `testcontainers-go` with real Postgres. Run with `go test -tags integration ./...`
-- **End-to-end verified**: Full pipeline tested against SYSPRO test company `RILT` — webhook → Postgres → batch processor → SORTOI submission → successful order creation. Includes dress rehearsal using real Shopify dev store product `LUMP0148` over Cloudflare Tunnel to the local service to RILT company, producing SYSPRO order `015575` end-to-end.
-- **Dynamic SKU discovery** (`internal/inventory/shopify.go:ListAllSKUs`): Paginated Shopify GraphQL `productVariants` query returning unique non-empty SKUs. Wired into the `Syncer` via a `SKULister` interface: when `SYSPRO_SKUS` is empty, the syncer calls the lister each cycle and falls back to the static slice if discovery errors or returns zero results. Boot log shows `stock sync lister=sql|shopify|static`. SYSPRO-side business object approach was empirically ruled out via `cmd/invbrwtest`.
-- **SQL Server lister** (`internal/inventory/sqlserver_lister.go`): Primary source for the WEBS warehouse stock-code list via Sarah's `bq_WEBS_Whs_QoH` view on RIL-DB01. Uses `github.com/microsoft/go-mssqldb`, 10s per-query timeout, dedupes whitespace + blanks. Wired into `cmd/server/main.go` with precedence SQL (if `SQLSERVER_DSN` set and ping succeeds) → Shopify (if token set) → static slice. Unit-tested with `go-sqlmock`; runtime verification blocks on RIL-DB01 credentials.
-- **Payments scaffold — ARSPAY cash receipts** (`internal/payments/`, `internal/syspro/cash_receipt.go`, migration 006): Polling-cycle syncer mirroring the inventory syncer pattern. `internal/payments/shopify_transactions.go` pulls gross/fee/net from Shopify Admin REST (`orders/{id}/transactions.json` + `orders.json` Link-header pagination). `payment_postings` table is idempotent on `shopify_transaction_id`, state machine `pending → posted | failed → dead_letter`. `syspro.PostCashReceipt` is stubbed returning `ErrCashReceiptNotImplemented` — the syncer treats that sentinel as "leave pending, don't count as failure" so the feature flag can flip without data cleanup once Sarah delivers the ARSPAY XML spec and Liz signs off. Syncer disabled unless `PAYMENTS_SYNC_INTERVAL` is set. `CashReceipt.PostingPeriod()` uses Go's `"200601"` reference-date layout for SYSPRO's YYYYMM format.
-- **Daily cash-receipt email MVP** (`internal/payments/report.go`, `mailer.go`, `daily_report.go`): Stopgap while ARSPAY automation is pending. Scheduled job wakes every 15m, fires once per UTC day at `DAILY_REPORT_HOUR` (default 07), pulls yesterday's Shopify transactions, emails a CSV to credit control via stdlib `net/smtp` + optional STARTTLS with base64 multipart MIME attachment. Zero-transaction days still send (proof of life). Disabled gracefully unless `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `CREDIT_CONTROL_TO`, `SHOPIFY_ACCESS_TOKEN` all set. `SendForDate` exposed for one-shot re-runs.
+- **Stock sync** (`internal/inventory/`): One-way SYSPRO -> Shopify inventory sync. Polls SYSPRO INVQRY every 15m, subtracts pending/processing order quantities, clamps to 0, pushes via Shopify GraphQL `inventorySetQuantities`. Webhook-triggered 2-second debounced sync. Lazy Shopify location/SKU discovery with caching. Single-flight guard, 3-minute per-cycle timeout. Zero-push rule: missing warehouse items pushed as 0 stock.
+- **Fulfilment sync** (`internal/fulfilment/`): Polls SYSPRO SORQRY every 30m for submitted orders with status "9" (complete). Creates Shopify fulfilments via GraphQL `fulfillmentCreate` with tracking info (carrier from SYSPRO `ShippingInstrs`). Handles already-fulfilled idempotently. Single-flight guard, graceful drain.
+- **Reconciliation sweeper** (`internal/reconcile/`): Polls Shopify Admin REST API to catch orders missed by webhook delivery (48h lookback). Preserves `taxes_included`, per-line `tax_lines`, and shipping `tax_lines` in the re-marshalled `RawPayload` so downstream VAT strip and StockTaxCode override work correctly on reconciled orders. First sweep fires immediately on startup.
+- **Secret validation**: `config.Load()` refuses to boot on empty required vars OR values starting with `PLACEHOLDER`.
+- **Graceful drain invariant**: Batch processor checks `ctx.Err()` between orders, so SIGTERM never leaves an order stuck in `processing`.
+- **SKU parity audit tool** (`cmd/sku-parity/`): CLI that compares Shopify product variants against SYSPRO stock codes. Pre-go-live sanity check.
+- **Operator runbook** (`docs/runbook.md`): Single-page playbook for ops handover.
+- **Shipping/freight**: SORTOI `<FreightLine>` with `<FreightValue>` and `<FreightCost>` (net of shipping VAT when `taxes_included=true`). Zero shipping = no freight line emitted.
+- **Cancellation classify-gate** (`internal/cancellation/`, `internal/webhook/cancel_handler.go`, migration 007): Shopify `orders/cancelled` webhooks classified into 6 dispositions based on SORQRY state. Phase 1 is classify-only. End-to-end verified against 5 dispositions live.
+- **SORTOI param clean-up + live RIL support**: Canonical param set, `CompanyPassword` support, operator login error detection.
+- **Zero-stock rule** (Sarah's rule): Missing WEBS warehouse items pushed as 0 to Shopify. Distinct from query errors (which preserve last-known level).
+- **Dynamic SKU discovery**: Paginated Shopify GraphQL `productVariants` query. Lister precedence: SQL Server -> Shopify -> static slice.
+- **SQL Server lister**: Sarah's `bq_WEBS_Whs_QoH` view on RIL-DB01. Blocks on RIL-DB01 credentials.
+- **Payments scaffold — ARSPAY**: Polling-cycle syncer with stubbed `PostCashReceipt`. Disabled unless `PAYMENTS_SYNC_INTERVAL` set.
+- **Daily cash-receipt email MVP**: Scheduled CSV email to credit control. Disabled unless SMTP configured.
+- **Tests**: ~183 unit tests + 16 Go integration tests. All race-clean. Uses `testcontainers-go` with real Postgres.
+- **End-to-end verified**: 3 real Playwright checkout orders through live Barbequick store -> Cloudflare tunnel -> local service -> live SYSPRO RIL, with correct VAT and StockTaxCode overrides confirmed via SORQRY.
 
 ### Not Yet Built
 
 - Runtime verification of SQL Server lister (code done, blocks on RIL-DB01 creds)
 - ARSPAY XML wire format + automated cash-receipt posting (scaffold done, blocks on Sarah's spec + Liz sign-off)
 - Gift card handling (non-stocked lines in SORTOI — pending Liz Buckley finance approval)
-- Order cancellation handler
+- Auto-propagating `cancellable_in_syspro` dispositions to SYSPRO (Phase 2)
+- GDPR data retention policy for `raw_payload` (NULLing after 90 days — needs Liz sign-off)
 
 ## Tech Stack
 
 - **Go 1.26.0** (mise, `~/Work/.mise.toml`)
-- **PostgreSQL 16** (Docker, network_mode: host)
+- **PostgreSQL 16** (Docker, network_mode: host, listen_addresses=localhost)
 - **pgx/v5** — only external dependency
-- **SYSPRO 8**: e.net REST on port 31002 (`http://192.168.3.150:31002/SYSPROWCFService/Rest`), GET-based API, company `RILT` (test)
-- **Shopify**: Admin API + webhooks
+- **SYSPRO 8**: e.net REST on port 31002 (`http://192.168.3.150:31002/SYSPROWCFService/Rest`), GET-based API, live company `RIL` (with `CompanyPassword=LIVE`) — test company `RILT` still supported by omitting `SYSPRO_COMPANY_PASSWORD`
+- **Shopify**: Admin API + webhooks, store `h0snak-s5.myshopify.com` (barbequick.co.uk)
 
 ## Key Design Rules
 
 - **SORTOI batching**: Send one order at a time, but reuse the same login session. Log in once, send all orders one after another, log off once.
-- **Gift cards**: Multi-purpose gift cards, zero VAT. Purchase: non-stocked line, positive amount, Gift Card Liability GL code. Redemption: non-stocked line, negative amount, same GL code. Uses `<NonStockedLine>` in SORTOI. (Sarah's proposal — pending Liz approval.)
+- **Gift cards**: Multi-purpose gift cards, zero VAT. Purchase: non-stocked line, positive amount, Gift Card Liability GL code. Redemption: non-stocked line, negative amount, same GL code. Uses `<NonStockedLine>` in SORTOI. (Pending Liz approval.)
 - **Stage-then-process**: Never call SYSPRO from a webhook handler. Persist first, process async.
-- **Single customer**: All orders → `WEBS01`. No multi-customer logic.
-- **Batch processing**: Orders submitted to SYSPRO on a schedule, not per-webhook. Business object is **SORTOI** (sales order transaction import).
+- **Single customer**: All orders -> `WEBS01`. No multi-customer logic.
+- **Batch processing**: Orders submitted to SYSPRO on a schedule, not per-webhook. Business object is **SORTOI**.
 - **HMAC verification**: All webhooks verified via HMAC-SHA256. Reject unverified.
 - **Idempotency**: Deduplicate on `X-Shopify-Webhook-Id`.
 - **Graceful shutdown**: Drain in-flight requests before stopping.
-- **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules. Keep it accurate enough to onboard a new developer.
-- **Stock sync design**: SYSPRO `INVQRY` (one call per SKU, `QtyAvailable` field) → Shopify GraphQL `inventorySetQuantities` (batch all SKUs in one mutation). Polls every 15m. Order-aware: subtracts pending/processing order quantities from SYSPRO values before pushing. Triggered sync on webhook receipt for near-instant updates. Never zeros Shopify on SYSPRO failure. Clamps negatives to 0. Single-flight guard.
-- **Pricing**: Shopify owns all deals/discounts. Net prices sent to SYSPRO via `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`.
-- **Session mutex**: SYSPRO allows only one session per operator (second logon kills the first). All SYSPRO callers (batch processor, stock syncer, fulfilment syncer) share one `EnetClient` with a `sessionMu` mutex serialising logon-logoff lifecycles. Never create a second `EnetClient` with the same operator.
+- **Doc sync**: After implementing a significant feature, update CLAUDE.md — "What's Built", layout, and any affected design rules.
+- **Stock sync design**: SYSPRO `INVQRY` (one call per SKU, `QtyAvailable` field) -> Shopify GraphQL `inventorySetQuantities` (batch). Polls every 15m. Order-aware: subtracts pending/processing order quantities. Triggered sync on webhook receipt. Never zeros Shopify on SYSPRO failure. Clamps negatives to 0. Single-flight guard. Zero-push rule: missing warehouse items -> 0 stock pushed.
+- **Pricing + VAT**: Shopify owns all deals/discounts. Prices sent to SYSPRO net of VAT via absolute subtraction (`line_items[].tax_lines[].price`), not rate-based division — avoids rounding drift. StockTaxCode override per line from Shopify's `tax_lines[].rate` (A=20%, B=5%, Z=0%). `<AlwaysUsePriceEntered>Y`. Gated on `taxes_included` — exclusive-pricing orders left untouched.
+- **Session mutex**: SYSPRO allows only one session per operator (second logon kills the first). All SYSPRO callers share one `EnetClient` with a `sessionMu` mutex. Never create a second `EnetClient` with the same operator.
+- **SORTOI silent drops**: SYSPRO silently ignores unknown XML elements. Empirically confirmed for `<Telephone>`, `<ProductTaxCode>`, `<TaxCode>`, `<MProductTaxCode>`. The correct per-line tax element is `<StockTaxCode>`, gated by a SYSPRO setup option.
 
 ## Data Mapping — Shopify to SYSPRO
 
 | Shopify | SYSPRO | Notes |
 |---|---|---|
 | `order.name` | Purchase Order Ref | e.g. `#BBQ1001` |
-| `created_at` | Order Date | RFC3339 |
-| `shipping_address.*` | Ship-To fields | Nil-safe |
+| `created_at` | Order Date + RequestedShipDate | RFC3339 |
+| `shipping_address.*` | Ship-To fields | Nil-safe, truncated to XSD limits |
 | `gateway` | Payment Ref | Fallback: `payment_gateway_names` joined |
-| `total_price` | Payment Amount | String → float64 |
+| `total_price` | Payment Amount | String -> float64 |
 | `line_items[].sku` | Stock Code | Must match SYSPRO exactly |
-| `line_items[].price` | Unit Price | String → float64 |
-| `line_items[].tax_lines[].price` | Tax Amount | Summed per line |
+| `line_items[].price` | Unit Price | Gross; net = price - (tax/qty) when taxes_included |
+| `line_items[].tax_lines[].price` | Tax Amount | Summed per line, used for VAT strip |
+| `line_items[].tax_lines[].rate` | StockTaxCode | 0.20->A, 0.05->B, 0.00->Z |
+| `shipping_lines[].price` | FreightValue | Net of shipping tax when taxes_included |
 
 **Fixed values**: Customer `WEBS01`, Business Object `SORTOI`, Company ID from env.
 
@@ -205,24 +240,27 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host)
 SHOPIFY_WEBHOOK_SECRET    # HMAC secret for webhooks
 SHOPIFY_API_KEY           # Shopify app API key
 SHOPIFY_API_SECRET        # Shopify app secret
-SHOPIFY_STORE_URL         # e.g. rectella.myshopify.com
+SHOPIFY_STORE_URL         # h0snak-s5.myshopify.com (NOT rectella.myshopify.com — dead dev store)
 SYSPRO_ENET_URL           # e.net endpoint on RIL-APP01
 SYSPRO_OPERATOR           # SYSPRO operator
 SYSPRO_PASSWORD           # SYSPRO password
-SYSPRO_COMPANY_ID         # SYSPRO company ID
+SYSPRO_COMPANY_ID         # SYSPRO company ID (RILT=test, RIL=live)
+SYSPRO_COMPANY_PASSWORD   # Required for live RIL (value: LIVE). Omit for RILT.
+SYSPRO_ALLOCATION_ACTION  # SORTOI allocation mode — F=force / B=back-order / A=auto (default "A")
+SYSPRO_TAX_CODE_MAP       # Rate-to-code mapping, default "0.20:A,0.05:B,0.00:Z" (Rectella confirmed)
 DATABASE_URL              # PostgreSQL connection string
-PORT                      # HTTP listen port (default 8080)
-ADMIN_TOKEN               # Shared secret for /orders and /orders/{id}/retry (optional, open if unset)
-SHOPIFY_ACCESS_TOKEN      # shpat_... from custom app (required for stock sync)
+PORT                      # HTTP listen port (default 8080; use 9080 on NUC to avoid SearXNG)
+ADMIN_TOKEN               # Shared secret for /orders and /orders/{id}/retry — REQUIRED in production
+SHOPIFY_ACCESS_TOKEN      # shpat_... from custom app (required for stock sync, fulfilment, reconciliation)
 SHOPIFY_LOCATION_ID       # Shopify location GID (optional, auto-discovered if unset)
-SYSPRO_WAREHOUSE          # Warehouse code, e.g. "WH01" (required for stock sync)
+SYSPRO_WAREHOUSE          # Warehouse code: WEBS (required for stock sync)
 SYSPRO_SKUS               # Comma-separated SKUs (optional; empty triggers dynamic discovery)
-SQLSERVER_DSN             # SQL Server DSN for primary SKU lister, e.g. "sqlserver://user:pw@ril-db01?database=<db>" (optional)
+SQLSERVER_DSN             # SQL Server DSN for primary SKU lister (optional)
 STOCK_SYNC_INTERVAL       # Default 15m
 BATCH_INTERVAL            # Default 5m
 FULFILMENT_SYNC_INTERVAL  # Default 30m
 RECONCILIATION_INTERVAL   # 0 = disabled; recommended 15m in production
-PAYMENTS_SYNC_INTERVAL    # 0 = disabled; enables the ARSPAY syncer (no-op until XML builder lands)
+PAYMENTS_SYNC_INTERVAL    # 0 = disabled; enables the ARSPAY syncer
 LOG_LEVEL                 # debug/info/warn/error
 
 # Daily cash-receipt email (all-or-nothing — leave unset to disable)
@@ -241,24 +279,43 @@ VPN_USERNAME              # VPN username
 VPN_PASSWORD              # VPN password
 ```
 
+## Current Deployment (NUC — Phase 1)
+
+The service runs live on a **GMKtec K8 Plus NUC** (Arch Linux / Omarchy), processing real Barbequick customer orders.
+
+- **Process management**: systemd user unit (`rectella.service`) with `Restart=on-failure`
+- **Database**: PostgreSQL 16 in Docker, `listen_addresses=localhost` (no network exposure)
+- **Database backups**: systemd timer (`rectella-backup.timer`) runs `pg_dump` every 6 hours to `~/backups/rectella/`, 30-day retention
+- **VPN**: openconnect to Rectella's Cisco AnyConnect for SYSPRO access
+- **Webhook delivery**: Cloudflare quick tunnel (`cloudflared tunnel --url http://localhost:9080`). URL is ephemeral — changes on restart, webhook URL in Shopify must be updated via Admin API. Both `orders/create` and `orders/cancelled` webhooks configured.
+- **Logs**: stdout JSON via `slog`, viewable with `journalctl --user -u rectella -f`
+
+### Known limitations of NUC deployment
+
+- Cloudflare tunnel URL is ephemeral — NUC reboot requires tunnel restart + Shopify webhook URL update
+- VPN is a bare openconnect process — not yet managed by systemd
+- No monitoring/alerting beyond manual log inspection
+- Reconciliation sweeper is the safety net for missed webhooks (15m interval, 48h lookback)
+
+## Future Deployment (Azure — Phase 2/3)
+
+- **Phase 2**: ctrlaltinsight Azure subscription ($200 free credit) — test deployment with mock SYSPRO
+- **Phase 3**: Rectella Azure subscription — production with Azure VPN Gateway -> Meraki site-to-site
+- **Platform**: Azure App Service (B1 Linux) or Container Apps
+- **Database**: Azure Database for PostgreSQL Flexible Server
+- **Cost estimate**: ~55-75 GBP/month (Rectella's subscription)
+- **Constraints doc**: See `docs/project-constraints.md`
+
 ## Phase 1 Scope Boundaries
 
-**Out of scope** — do NOT build: returns/refunds, multi-warehouse, ERP pricing sync, automated payment posting, 3PL dashboard, carrier integrations, subscription products, hosting infrastructure.
+**Out of scope** — do NOT build: returns/refunds, multi-warehouse, ERP pricing sync, automated payment posting, 3PL dashboard, carrier integrations, subscription products.
 
 ## Infrastructure
 
 - **VPN**: Cisco AnyConnect (`rectella-internationa-wireless-w-tqngtmvdtj.dynamic-m.com`)
-- **App Server**: `RIL-APP01` (e.net SOAP)
+- **App Server**: `RIL-APP01` (e.net SOAP, port 31002)
 - **DB Server**: `RIL-DB01` (SQL Server)
 - **Managed IT**: NCS (`helpdesk@ncs.cloud`, ticket #44257)
-
-## Deployment (Production)
-
-- **Platform**: Azure Container Apps (single Go binary as Docker container)
-- **Database**: Azure Database for PostgreSQL Flexible Server
-- **Connectivity**: Azure VPN Gateway (Basic) → Rectella Meraki (site-to-site)
-- **Cost estimate**: ~£55–75/month (Rectella's Azure subscription)
-- **Constraints doc**: See `docs/project-constraints.md` for full deployment architecture
 
 ## Stakeholders
 
@@ -274,17 +331,16 @@ VPN_PASSWORD              # VPN password
 
 ## Status
 
-Active deployment — pushing for go-live as soon as dependencies clear. The
-live schedule lives in `docs/deployment-tasks.md`; treat that as the single
-source of truth for outstanding work. Hypercare window is four weeks post
-go-live.
+**Phase 1 LIVE** — service running on NUC, processing real customer orders from barbequick.co.uk through to live SYSPRO RIL. Hardened 2026-04-16 (Postgres lockdown, systemd, backups, reconciliation VAT fix, ReadHeaderTimeout).
+
+Phase 2 Azure deployment is next. The go-live gaps live in the Claude memory file `project_golive_gaps.md`.
 
 ## SYSPRO Reference Docs
 
 Local path: `~/Documents/Syspro/` — not committed to repo (proprietary, large PDFs).
 
 Key docs for this project:
-- `sales-orders-reference-guide.pdf` — Sales Order Entry, line types (stocked/non-stocked/freight/misc), SORTOI fields
+- `sales-orders-reference-guide.pdf` — Sales Order Entry, line types, SORTOI fields
 - `SYSPRO e.net Solutions Support Training Guide - SYSPRO 8.pdf` — e.net architecture, business objects, logon process, XML structure
 - `trade-promotions-reference-guide.pdf` — Trade Promotions pricing (Sarah's approach)
 - `inventory-control-reference-guide.pdf` — Stock codes, warehouses (stock sync)
@@ -292,24 +348,24 @@ Key docs for this project:
 
 ### SORTOI XML Notes
 
-- Stocked lines: `<StockLine>` with `<StockCode>`, `<OrderQty>`, `<Price>`
+- Stocked lines: `<StockLine>` with `<StockCode>`, `<OrderQty>`, `<Price>`, `<StockTaxCode>` (per-line override, requires setup option)
 - Non-stocked lines: `<NonStockedLine>` with `<NStockCode>`, `<NStockDes>`, `<NOrderQty>`, `<NPrice>`, `<NProductClass>`
-- Parameters: `<Process>Import</Process>`, `<StatusInProcess>Y</StatusInProcess>`, `<ValidateOnly>N</ValidateOnly>`, `<IgnoreWarnings>W</IgnoreWarnings>` (W = continue + return warnings; Y suppresses entirely), `<ApplyIfEntireDocumentValid>Y</ApplyIfEntireDocumentValid>` (atomicity — prevents partial orders), `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`, `<AllowZeroPrice>Y</AllowZeroPrice>`
+- Freight: `<FreightLine>` with `<FreightValue>`, `<FreightCost>` (net of shipping tax when taxes_included)
+- Parameters: `<Process>Import</Process>`, `<StatusInProcess>Y</StatusInProcess>`, `<ValidateOnly>N</ValidateOnly>`, `<IgnoreWarnings>W</IgnoreWarnings>`, `<AlwaysUsePriceEntered>Y</AlwaysUsePriceEntered>`, `<AllowZeroPrice>Y</AllowZeroPrice>`, `<AllocationAction>A</AllocationAction>`, `<AllowDuplicateOrderNumbers>Y</AllowDuplicateOrderNumbers>`
 - Ship-to address: `<ShipAddress1>` through `<ShipAddress5>` + `<ShipPostalCode>` (NOT `Ship2Address` — SYSPRO silently ignores unknown elements)
-- SORTOI Import response: clean success (no warnings) returns only `<StatusOfItems>` with no `<Order>` block. Success with warnings returns `<Order><SalesOrder>XXXXXX</SalesOrder></Order>`. Failure returns `<Order><SalesOrder/></Order>` (empty).
+- SORTOI Import response: clean success returns only `<StatusOfItems>`. Success with warnings returns `<Order><SalesOrder>XXXXXX</SalesOrder></Order>`. Failure returns `<Order><SalesOrder/></Order>` (empty).
 - Session GUID from `/Logon` must be supplied as `UserId` on every `/Transaction` call
+- SYSPRO silently drops unknown XML elements — never throws an error. Empirically confirmed: `<Telephone>`, `<ProductTaxCode>`, `<TaxCode>`, `<MProductTaxCode>` all accepted but ignored.
+- `<StockTaxCode>` requires "Allow changes to tax code for stocked items" in Sales Order Setup > Tax/Um tab (Sarah enabled this on RIL).
 
 ## Environment Notes
 
-- Arch Linux (Omarchy) + Hyprland
+- GMKtec K8 Plus NUC, Arch Linux (Omarchy) + Hyprland
 - Git default branch `master`, remote: `github.com/trismegistus0/rectella-shopify-service`
 - Docker `network_mode: host` required — Docker bridge port mapping broken on kernel 6.18+ with nftables
-- SearXNG runs on port 8080 on dev machine — use `PORT=9080` for the service locally
+- SearXNG runs on port 8080 on NUC — use `PORT=9080` for the service locally
 - Git remote: `github.com/trismegistus0/rectella-shopify-service` (public — .gitignore hardened)
-
-## Linear
-
-This project is tracked as **Rectella** in the Dev team on Linear. See vault-level CLAUDE.md for full Linear workflow instructions.
+- `rectella.myshopify.com` is a dead/expired dev store — do NOT use. Live store is `h0snak-s5.myshopify.com`
 
 ## MCP Servers
 
@@ -318,7 +374,7 @@ This project is tracked as **Rectella** in the Dev team on Linear. See vault-lev
 claude mcp add shopify-dev -- npx -y @shopify/dev-mcp@latest
 
 # Installed as official plugins (stored in ~/.claude/settings.json):
-# context7@claude-plugins-official  — docs lookup (use mcp__plugin_context7_context7__* tools)
+# context7@claude-plugins-official  — docs lookup
 # gopls-lsp@claude-plugins-official — Go LSP
 # linear — task management (HTTP MCP, OAuth)
 ```
