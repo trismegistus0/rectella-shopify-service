@@ -109,12 +109,12 @@ func TestBuildSORTOI_DataXML_StockLines(t *testing.T) {
 		"<StockCode>CBBQ0001</StockCode>",
 		"<OrderQty>2</OrderQty>",
 		"<OrderUom>EA</OrderUom>",
-		"<Price>599</Price>",
+		"<Price>599.00</Price>",
 		"<PriceUom>EA</PriceUom>",
 		"<CustomerPoLine>0002</CustomerPoLine>",
 		"<StockCode>CBBQ0002</StockCode>",
 		"<OrderQty>1</OrderQty>",
-		"<Price>12.5</Price>",
+		"<Price>12.50</Price>",
 	} {
 		if !strings.Contains(dataXML, want) {
 			t.Errorf("data XML missing %q\ngot: %s", want, dataXML)
@@ -172,9 +172,9 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 
 	// Net prices: 18.00, 12.50, 10.00
 	for _, want := range []string{
-		"<Price>18</Price>",
-		"<Price>12.5</Price>",
-		"<Price>10</Price>",
+		"<Price>18.00</Price>",
+		"<Price>12.50</Price>",
+		"<Price>10.00</Price>",
 	} {
 		if !strings.Contains(dataXML, want) {
 			t.Errorf("data XML missing net price %q\ngot: %s", want, dataXML)
@@ -183,8 +183,8 @@ func TestBuildSORTOI_DataXML_NetPriceAfterDiscount(t *testing.T) {
 
 	// Gross prices should NOT appear
 	for _, absent := range []string{
-		"<Price>20</Price>",
-		"<Price>15</Price>",
+		"<Price>20.00</Price>",
+		"<Price>15.00</Price>",
 	} {
 		if strings.Contains(dataXML, absent) {
 			t.Errorf("data XML should contain net price, not gross; found %q\ngot: %s", absent, dataXML)
@@ -309,8 +309,8 @@ func TestBuildSORTOI_DataXML_PreservesNetWhenExclusive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(dataXML, "<Price>8</Price>") {
-		t.Errorf("expected <Price>8</Price> (price already net, no strip); got: %s", dataXML)
+	if !strings.Contains(dataXML, "<Price>8.00</Price>") {
+		t.Errorf("expected <Price>8.00</Price> (price already net, no strip); got: %s", dataXML)
 	}
 }
 
@@ -357,8 +357,8 @@ func TestBuildSORTOI_DataXML_NonTaxableUnchanged(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(dataXML, "<Price>15</Price>") {
-		t.Errorf("expected <Price>15</Price> (tax=0, no strip); got: %s", dataXML)
+	if !strings.Contains(dataXML, "<Price>15.00</Price>") {
+		t.Errorf("expected <Price>15.00</Price> (tax=0, no strip); got: %s", dataXML)
 	}
 }
 
@@ -383,8 +383,8 @@ func TestBuildSORTOI_DataXML_MixedTaxableAndExempt(t *testing.T) {
 		t.Errorf("expected <Price>6.67</Price> for taxable line; got: %s", dataXML)
 	}
 	// Zero-rated line untouched
-	if !strings.Contains(dataXML, "<Price>15</Price>") {
-		t.Errorf("expected <Price>15</Price> for zero-rated line; got: %s", dataXML)
+	if !strings.Contains(dataXML, "<Price>15.00</Price>") {
+		t.Errorf("expected <Price>15.00</Price> for zero-rated line; got: %s", dataXML)
 	}
 }
 
@@ -476,6 +476,33 @@ func TestTruncate(t *testing.T) {
 		if got := truncate(tc.in, tc.n); got != tc.out {
 			t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.out)
 		}
+	}
+}
+
+// TestBuildSORTOI_PriceFormatting_RoundsLongDecimal is the BBQ1026 regression
+// guard. Before the 2026-04-21 fix a per-unit net price computed as
+// (41.46 - 1.97) / 6 = 6.5816666... marshaled at full float64 precision,
+// giving <Price>6.581666666666667</Price> which SYSPRO rejected as
+// "XML element 'price' must be numeric". Every order whose VAT-strip math
+// produced a non-terminating decimal (3-for-2 discounts, odd line counts)
+// would have silently failed the same way. %.2f string formatting at
+// construction matches the existing ARSPAY cash_receipt.go convention.
+func TestBuildSORTOI_PriceFormatting_RoundsLongDecimal(t *testing.T) {
+	order := minimalOrder()
+	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.05,"price":"1.97"}]}]}`)
+	lines := []model.OrderLine{
+		{SKU: "LUMP0128", Quantity: 6, UnitPrice: 6.91, Tax: 1.97},
+	}
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
+	if err != nil {
+		t.Fatalf("buildSORTOI: %v", err)
+	}
+	// Net per-unit = 6.91 - 1.97/6 = 6.5816... → round 2dp → 6.58
+	if !strings.Contains(dataXML, "<Price>6.58</Price>") {
+		t.Errorf("expected <Price>6.58</Price>; got: %s", dataXML)
+	}
+	if strings.Contains(dataXML, "6.5816") || strings.Contains(dataXML, "6.58166") {
+		t.Errorf("price still contains long-decimal float (BBQ1026 regression); dataXML=%s", dataXML)
 	}
 }
 

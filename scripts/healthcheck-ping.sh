@@ -23,18 +23,30 @@ fi
 HC_URL="${HC_PING_URL_HEALTH:-}"
 [[ -z "$HC_URL" ]] && { echo "HC_PING_URL_HEALTH not set, skipping"; exit 0; }
 
-# Discover tunnel URL from cloudflared logs if HEALTH_URL not provided.
-# Look back 7 days because cloudflared only logs the URL at start.
-# `|| true` swallows grep's exit-1-on-no-match (set -e would otherwise kill us).
+# URL discovery (when HEALTH_URL not pre-set), in precedence order:
+#   1. Cloudflare named-tunnel hostname from ~/.cloudflared/config.yml
+#      (production — stable URL, doesn't drift across cloudflared restarts)
+#   2. Last trycloudflare.com URL emitted by cloudflared (legacy Quick
+#      Tunnel — kept as a dev/test fallback)
+#   3. localhost:9080 (loopback fallback — proves the service is up
+#      but not the public path)
 HEALTH_URL="${HEALTH_URL:-}"
+if [[ -z "$HEALTH_URL" ]]; then
+  CONFIG_YML="$HOME/.cloudflared/config.yml"
+  if [[ -r "$CONFIG_YML" ]]; then
+    NAMED_HOST=$(grep -oP 'hostname:\s*\K\S+' "$CONFIG_YML" | head -1) || true
+    if [[ -n "$NAMED_HOST" ]]; then
+      HEALTH_URL="https://${NAMED_HOST}/health"
+    fi
+  fi
+fi
 if [[ -z "$HEALTH_URL" ]]; then
   TUNNEL=$(journalctl --user -u cloudflared --since "7 days ago" -o cat 2>/dev/null \
     | grep -oP 'https://[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com' | tail -1) || true
-  if [[ -z "$TUNNEL" ]]; then
-    # Fall back to localhost (proves service is up but not the tunnel path)
-    HEALTH_URL="http://localhost:9080/health"
-  else
+  if [[ -n "$TUNNEL" ]]; then
     HEALTH_URL="${TUNNEL}/health"
+  else
+    HEALTH_URL="http://localhost:9080/health"
   fi
 fi
 

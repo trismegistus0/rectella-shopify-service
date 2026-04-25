@@ -75,20 +75,20 @@ type sortoiDetail struct {
 }
 
 type sortoiFreightLine struct {
-	FreightValue float64 `xml:"FreightValue"`
-	FreightCost  float64 `xml:"FreightCost"`
+	FreightValue string `xml:"FreightValue"` // %.2f at construction (see sortoiStockLine.Price)
+	FreightCost  string `xml:"FreightCost"`  // %.2f at construction
 }
 
 type sortoiStockLine struct {
-	CustomerPoLine string  `xml:"CustomerPoLine"`
-	LineActionType string  `xml:"LineActionType"`
-	StockCode      string  `xml:"StockCode"`
-	Warehouse      string  `xml:"Warehouse,omitempty"`
-	OrderQty       int     `xml:"OrderQty"`
-	OrderUom       string  `xml:"OrderUom"`
-	Price          float64 `xml:"Price"`
-	PriceUom       string  `xml:"PriceUom"`
-	TaxCode        string  `xml:"StockTaxCode,omitempty"` // Per-line tax code override — requires "Allow changes to tax code" in Sales Order Setup
+	CustomerPoLine string `xml:"CustomerPoLine"`
+	LineActionType string `xml:"LineActionType"`
+	StockCode      string `xml:"StockCode"`
+	Warehouse      string `xml:"Warehouse,omitempty"`
+	OrderQty       int    `xml:"OrderQty"`
+	OrderUom       string `xml:"OrderUom"`
+	Price          string `xml:"Price"` // %.2f at construction — Go's float64 marshal outputs 15-digit precision on non-terminating decimals, which SYSPRO rejects as "not numeric" (BBQ1026 regression 2026-04-21)
+	PriceUom       string `xml:"PriceUom"`
+	TaxCode        string `xml:"StockTaxCode,omitempty"` // Per-line tax code override — requires "Allow changes to tax code" in Sales Order Setup
 }
 
 // SYSPRO 8 SORTOI field length limits (from sales-orders-reference-guide.pdf).
@@ -326,7 +326,7 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 			Warehouse:      warehouse,
 			OrderQty:       l.Quantity,
 			OrderUom:       "EA",
-			Price:          netPrice,
+			Price:          fmt.Sprintf("%.2f", netPrice),
 			PriceUom:       "EA",
 			TaxCode:        taxCode,
 		}
@@ -344,8 +344,8 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 			freightNet -= extractShippingTax(order.RawPayload)
 		}
 		details.FreightLine = &sortoiFreightLine{
-			FreightValue: freightNet,
-			FreightCost:  freightNet,
+			FreightValue: fmt.Sprintf("%.2f", freightNet),
+			FreightCost:  fmt.Sprintf("%.2f", freightNet),
 		}
 	}
 
@@ -376,4 +376,13 @@ func buildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocati
 	}
 
 	return string(paramsBytes), string(dataBytes), nil
+}
+
+// BuildSORTOI is the exported wrapper around buildSORTOI. Used by operator
+// CLIs (cmd/resubmit-order) that need to produce the exact SORTOI params
+// and data XML the batch processor would emit for a given order. Keep this
+// a pure delegate — no extra logic — so CLI submissions are byte-identical
+// to production.
+func BuildSORTOI(order model.Order, lines []model.OrderLine, warehouse, allocationAction string, taxCodeMap map[float64]string) (string, string, error) {
+	return buildSORTOI(order, lines, warehouse, allocationAction, taxCodeMap)
 }

@@ -60,16 +60,33 @@ type Config struct {
 	// the syncer falls through to Shopify-first lister then the static slice.
 	SQLServerDSN string
 
-	// Daily cash-receipt email to credit control. Disabled unless all
-	// of SMTP_HOST/PORT/FROM and CREDIT_CONTROL_TO are set.
-	SMTPHost        string
-	SMTPPort        int
-	SMTPUsername    string
-	SMTPPassword    string
-	SMTPFrom        string
-	SMTPUseTLS      bool
-	CreditControlTo []string
-	DailyReportHour int // UTC, default 1 (= 01:00 GMT / 02:00 BST — per Sarah's spec)
+	// Outbound email via Microsoft Graph (app registration
+	// "SysPro Shopify Graph API App", provisioned by NCS on 2026-04-23
+	// with Mail.Send application permission scoped to a single mailbox
+	// via ApplicationAccessPolicy — see Andrew's notes).
+	//
+	// Both the daily cash-receipt report and the daily order-intake
+	// report use this mailer. Either report is disabled if any Graph
+	// field is empty, so the service stays bootable without the mailbox
+	// configured.
+	GraphTenantID      string
+	GraphClientID      string
+	GraphClientSecret  string
+	GraphSenderMailbox string // e.g. shopify-service@rectella.com
+	CreditControlTo    []string
+	OrderIntakeTo      []string
+	DailyReportHour    int // UTC, default 1 (= 01:00 GMT / 02:00 BST — Sarah's spec for cash receipts)
+	OrderIntakeHour    int // UTC, default 6 (= 07:00 BST / 06:00 GMT — per the Asana ticket)
+
+	// Daily-report resilience layer. Optional — features degrade
+	// gracefully when their env vars are unset. See docs/handover.md
+	// §8 for the operator's view.
+	HealthchecksCashURL   string // GET success ping after each cash-receipt send
+	HealthchecksIntakeURL string // GET success ping after each intake send
+	DeadLetterDir         string // dir for un-sent CSVs (default ~/backups/rectella/missed-reports)
+	SentReportArchiveDir  string // dir for archived successful sends (default ~/backups/rectella/sent-reports)
+	ReportStateDir        string // dir for last-send timestamps to support idempotency (default ~/backups/rectella/state)
+	NtfyTopic             string // ntfy push topic for dead-letter alerts
 }
 
 func Load() (*Config, error) {
@@ -207,27 +224,26 @@ func Load() (*Config, error) {
 	c.ArspayCashBook = os.Getenv("ARSPAY_CASH_BOOK")
 	c.ArspayPaymentType = os.Getenv("ARSPAY_PAYMENT_TYPE")
 
-	// Daily cash-receipt email config. All-or-nothing: if any SMTP
-	// field is set but not all, we still load — the daily report
-	// wiring in main.go enables the job only when the full set is
-	// present.
-	c.SMTPHost = os.Getenv("SMTP_HOST")
-	if p := os.Getenv("SMTP_PORT"); p != "" {
-		if n, err := strconv.Atoi(p); err == nil {
-			c.SMTPPort = n
-		} else {
-			return nil, fmt.Errorf("invalid SMTP_PORT: %q", p)
-		}
-	}
-	c.SMTPUsername = os.Getenv("SMTP_USERNAME")
-	c.SMTPPassword = checkPlaceholder("SMTP_PASSWORD", os.Getenv("SMTP_PASSWORD"))
-	c.SMTPFrom = os.Getenv("SMTP_FROM")
-	c.SMTPUseTLS = os.Getenv("SMTP_USE_TLS") == "true"
+	// Microsoft Graph mailer config. All-or-nothing: if any field is
+	// missing the report wiring in main.go disables both reports rather
+	// than booting with partial auth.
+	c.GraphTenantID = os.Getenv("GRAPH_TENANT_ID")
+	c.GraphClientID = os.Getenv("GRAPH_CLIENT_ID")
+	c.GraphClientSecret = checkPlaceholder("GRAPH_CLIENT_SECRET", os.Getenv("GRAPH_CLIENT_SECRET"))
+	c.GraphSenderMailbox = os.Getenv("GRAPH_SENDER_MAILBOX")
 	if raw := os.Getenv("CREDIT_CONTROL_TO"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {
 			s = strings.TrimSpace(s)
 			if s != "" {
 				c.CreditControlTo = append(c.CreditControlTo, s)
+			}
+		}
+	}
+	if raw := os.Getenv("ORDER_INTAKE_TO"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				c.OrderIntakeTo = append(c.OrderIntakeTo, s)
 			}
 		}
 	}
@@ -238,6 +254,33 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid DAILY_REPORT_HOUR: %q", h)
 		}
 		c.DailyReportHour = n
+	}
+	c.OrderIntakeHour = 6
+	if h := os.Getenv("ORDER_INTAKE_HOUR"); h != "" {
+		n, err := strconv.Atoi(h)
+		if err != nil || n < 0 || n > 23 {
+			return nil, fmt.Errorf("invalid ORDER_INTAKE_HOUR: %q", h)
+		}
+		c.OrderIntakeHour = n
+	}
+
+	// Resilience layer — all optional with sensible defaults.
+	c.HealthchecksCashURL = os.Getenv("HEALTHCHECKS_CASH_URL")
+	c.HealthchecksIntakeURL = os.Getenv("HEALTHCHECKS_INTAKE_URL")
+	c.NtfyTopic = os.Getenv("NTFY_TOPIC")
+	home, _ := os.UserHomeDir()
+	defaultRoot := home + "/backups/rectella"
+	c.DeadLetterDir = os.Getenv("DEAD_LETTER_DIR")
+	if c.DeadLetterDir == "" {
+		c.DeadLetterDir = defaultRoot + "/missed-reports"
+	}
+	c.SentReportArchiveDir = os.Getenv("SENT_REPORT_ARCHIVE_DIR")
+	if c.SentReportArchiveDir == "" {
+		c.SentReportArchiveDir = defaultRoot + "/sent-reports"
+	}
+	c.ReportStateDir = os.Getenv("REPORT_STATE_DIR")
+	if c.ReportStateDir == "" {
+		c.ReportStateDir = defaultRoot + "/state"
 	}
 
 	c.LogLevel, err = parseLogLevel(os.Getenv("LOG_LEVEL"))

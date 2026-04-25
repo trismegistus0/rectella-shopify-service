@@ -181,7 +181,9 @@ docker-compose.yml                  # PostgreSQL 16 (network_mode: host, listen_
 - **Dynamic SKU discovery**: Paginated Shopify GraphQL `productVariants` query. Lister precedence: SQL Server -> Shopify -> static slice.
 - **SQL Server lister**: Sarah's `bq_WEBS_Whs_QoH` view on RIL-DB01. Blocks on RIL-DB01 credentials.
 - **Payments scaffold — ARSPAY**: Polling-cycle syncer with stubbed `PostCashReceipt`. Disabled unless `PAYMENTS_SYNC_INTERVAL` set.
-- **Daily cash-receipt email MVP**: Scheduled CSV email to credit control. Disabled unless SMTP configured.
+- **Graph API mailer** (`internal/payments/mailer.go`): Microsoft Graph `sendMail` via client-credentials OAuth. Token cache with 5-min safety margin + 401 refresh. Scoped to the `shopify-service@rectella.com` service mailbox via Entra `ApplicationAccessPolicy` (Andrew/NCS, 2026-04-23).
+- **Daily cash-receipt email**: Scheduled CSV email to credit control (01:00 UTC). Uses Graph mailer. Disabled unless `GRAPH_*` + `CREDIT_CONTROL_TO` + `SHOPIFY_ACCESS_TOKEN` configured.
+- **Daily order-intake email** (`internal/payments/intake.go`): Morning summary (06:00 UTC = 07:00 BST) of yesterday's orders — count, gross total, status breakdown, stuck-row (BBQ1026 fingerprint) count. HTML body + per-order CSV attachment. Disabled unless `GRAPH_*` + `ORDER_INTAKE_TO` configured.
 - **Tests**: ~183 unit tests + 16 Go integration tests. All race-clean. Uses `testcontainers-go` with real Postgres.
 - **End-to-end verified**: 3 real Playwright checkout orders through live Barbequick store -> Cloudflare tunnel -> local service -> live SYSPRO RIL, with correct VAT and StockTaxCode overrides confirmed via SORQRY.
 
@@ -263,15 +265,22 @@ RECONCILIATION_INTERVAL   # 0 = disabled; recommended 15m in production
 PAYMENTS_SYNC_INTERVAL    # 0 = disabled; enables the ARSPAY syncer
 LOG_LEVEL                 # debug/info/warn/error
 
-# Daily cash-receipt email (all-or-nothing — leave unset to disable)
-SMTP_HOST                 # e.g. smtp.office365.com
-SMTP_PORT                 # e.g. 587
-SMTP_USERNAME             # optional, AUTH PLAIN
-SMTP_PASSWORD             # optional
-SMTP_FROM                 # envelope from address
-SMTP_USE_TLS              # "true" enables STARTTLS
+# Outbound email via Microsoft Graph (Entra app "SysPro Shopify Graph API App")
+# All four GRAPH_* vars required — reports disabled gracefully if any are missing.
+# App has Mail.Send application permission scoped via ApplicationAccessPolicy to
+# a single mailbox (shopify-service@rectella.com).
+GRAPH_TENANT_ID           # Rectella Entra tenant GUID
+GRAPH_CLIENT_ID           # App registration (client) ID
+GRAPH_CLIENT_SECRET       # Client secret value — NEVER commit
+GRAPH_SENDER_MAILBOX      # shopify-service@rectella.com
+
+# Cash-receipt report (disabled unless CREDIT_CONTROL_TO set + SHOPIFY_ACCESS_TOKEN present)
 CREDIT_CONTROL_TO         # comma-separated recipients
-DAILY_REPORT_HOUR         # UTC hour (0-23), default 7
+DAILY_REPORT_HOUR         # UTC hour (0-23), default 1 (= 01:00 GMT / 02:00 BST)
+
+# Order-intake report (disabled unless ORDER_INTAKE_TO set)
+ORDER_INTAKE_TO           # comma-separated recipients (ops/finance)
+ORDER_INTAKE_HOUR         # UTC hour (0-23), default 6 (= 07:00 BST / 06:00 GMT)
 
 # Operator-only (not consumed by service, documented for setup)
 VPN_HOST                  # Cisco AnyConnect host

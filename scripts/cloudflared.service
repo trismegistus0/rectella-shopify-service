@@ -1,15 +1,15 @@
 [Unit]
-Description=Cloudflare Tunnel for Rectella Shopify webhooks
+Description=Cloudflare Tunnel for Rectella Shopify webhooks (named tunnel: rectella-shopify)
 After=rectella.service
 Wants=rectella.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:9080
+# Named tunnel — uses ~/.cloudflared/config.yml (hostname rectella.ctrlaltinsight.co.uk).
+# DNS is fixed; no per-restart webhook re-registration needed.
+ExecStart=/usr/bin/cloudflared tunnel run rectella-shopify
 Restart=on-failure
 RestartSec=10
-# After restart, run the webhook URL updater
-ExecStartPost=/home/bast/brain/projects/code/rectella-shopify-service/scripts/update-webhook-url.sh
 
 [Install]
 WantedBy=default.target

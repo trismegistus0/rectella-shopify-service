@@ -155,9 +155,13 @@ Lister precedence (first one configured wins):
 
 ## 5. Topic 3 — Cash receipts (daily report to credit control)
 
-### 5.1 Agreed approach for Phase 1 (per Sarah, 2026-04-17)
+### 5.1 Agreed approach (per Sarah, 2026-04-17; Graph mailer live 2026-04-25)
 
-Cash receipts are handled by a **daily email** to Rectella's credit control mailbox at **01:00 UK time**, containing the prior day's settled Shopify transactions as a CSV. Credit control posts the receipts manually in SYSPRO (Sales / AR → ARSPAY) against the WEBS01 customer account, using the Shopify order reference as the payment reference.
+Cash receipts are handled by a **daily email** to Rectella's credit control mailbox at **06:00 UK time**, containing the prior day's settled Shopify transactions as a CSV. Credit control posts the receipts manually in SYSPRO (Sales / AR → ARSPAY) against the WEBS01 customer account, using the Shopify order reference as the payment reference.
+
+A **second daily email at 06:00 UK** — the **order-intake summary** — was added on top of the cash-receipt feed: HTML breakdown of yesterday's order count, gross total, status mix, and a "stuck-rows" anomaly count (BBQ1026 fingerprint), plus a per-order CSV attachment. Goes to ops/finance recipients via `ORDER_INTAKE_TO`.
+
+Both reports use **Microsoft Graph `sendMail`** via the dedicated service mailbox `shopify-service@rectella.com` (NCS provisioned 2026-04-23). Auth is client-credentials OAuth against the Entra app registration "SysPro Shopify Graph API App" (`Mail.Send` application permission, `ApplicationAccessPolicy` scoped to that one mailbox — the app cannot send from anywhere else).
 
 > **Phase 2 note:** automated posting via SYSPRO's AR cash-receipt business object (`ARSTPY`) is **not viable on Rectella's current SYSPRO licence** — the business object is not registered in this environment. We will investigate full automation in **Phase 2 once Rectella has moved to the new licensing model** that includes the AR transaction posting business objects.
 
@@ -165,50 +169,78 @@ Cash receipts are handled by a **daily email** to Rectella's credit control mail
 
 ```mermaid
 sequenceDiagram
-    participant T as Daily timer (01:00 UTC)
+    participant T as Daily timer (05:00 UTC = 06:00 UK BST)
     participant Svc as Middleware
-    participant S as Shopify
+    participant S as Shopify Admin API
+    participant G as Microsoft Graph
     participant CC as Credit control mailbox
 
     T->>Svc: tick
-    Svc->>S: GET /orders.json (yesterday, financial_status=paid)
+    Svc->>S: REST GET /orders.json (yesterday, financial_status=paid)
     loop For each paid order
-        Svc->>S: GET /orders/{id}/transactions.json
-        S-->>Svc: gross, fee, net
+        Svc->>S: GraphQL transactions { fees { amount } receiptJson }
+        S-->>Svc: gross + fees (Shopify Payments via fees[]; PayPal via receipt.fee_amount)
     end
-    Svc->>Svc: Build CSV (4 columns per Sarah's spec)
-    Svc->>CC: SMTP — subject "[Shopify] Daily cash receipts — YYYY-MM-DD (N)"
+    Svc->>Svc: Build CSV (UTF-8 BOM, 4 cols per Sarah's spec) + anomaly check
+    Svc->>G: POST /users/shopify-service@rectella.com/sendMail (bearer token)
+    G-->>Svc: 202 Accepted
+    Svc->>Svc: Archive CSV to ~/backups/rectella/sent-reports/
+    Svc->>Svc: GET healthcheck-cash URL (heartbeat)
     Note over CC: Credit control posts manually in SYSPRO ARSPAY UI
 ```
 
-### 5.3 CSV format (per Sarah, 2026-04-17)
+On send failure (Graph 5xx, 401 after retry, network blip): the CSV is written to `~/backups/rectella/missed-reports/YYYY-MM-DD-cash.csv`, an ntfy push fires to the operator with the file path, the heartbeat is **not** sent (Healthchecks.io grace window expires → secondary ntfy alert). Operator re-sends with `cmd/send-report --type=cash --date=YYYY-MM-DD`.
 
-Four columns, one row per settled Shopify transaction for the prior calendar day (UTC). Currency values prefixed with `£`.
+### 5.3 CSV format (per Sarah, 2026-04-17, updated 2026-04-25)
+
+Five columns, one row per settled Shopify transaction for the prior calendar day (UTC). Currency values prefixed with `£`.
 
 | Column | Meaning |
 |--------|---------|
+| `Customer (SYSPRO)` | Always `WEBS01` — the SYSPRO customer account every Shopify order posts against. Saves credit control looking it up. |
 | `Shopify Reference` | Shopify order name (e.g. `#BBQ1001`) — use as payment reference in SYSPRO ARSPAY UI |
 | `Order Value` | Gross — what the customer paid (post into the `Amount` field) |
-| `Charges` | Bank / Stripe fee (post into the `Bank charges` field) |
+| `Charges` | Bank / Stripe / PayPal fee (post into the `Bank charges` field) — see §5.5 for which gateway returns what |
 | `Receipt Value` | Order Value − Charges — the figure that hits the cashbook |
 
-**Example row:** `#BBQ1001,£8.00,£1.12,£6.88`
+**Example row:** `WEBS01,#BBQ1001,£8.00,£1.12,£6.88`
 
-The email body also summarises gross/fee/net/count in plain text so credit control can sanity-check totals without opening the attachment.
+The email body also summarises gross/fee/net/count in plain text so credit control can sanity-check totals without opening the attachment, and explicitly states "Post against SYSPRO customer: WEBS01" so the destination account is unambiguous.
+
+**Zero-order days**: an email is sent every day, even if zero Shopify transactions were paid the prior day. The body says explicitly _"No paid Shopify transactions for this date — this email confirms the daily process ran successfully"_ so credit control knows the absence is intentional, not a system failure.
+
+**Range / backfill report** (`cmd/send-report --type=cash --from=YYYY-MM-DD --to=YYYY-MM-DD`): adds a leading `Date` column so multi-day rows are sortable. Same five trailing columns. Used for one-off operator sends (e.g. the credit-control cutover announcement on first launch).
 
 ### 5.4 Operating prerequisites
 
 | Item | Owner | Notes |
 |------|-------|-------|
-| `SMTP_HOST`, `SMTP_PORT` | Andrew (NCS) / Rectella IT | e.g. `smtp.office365.com:587` |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | Andrew | For STARTTLS auth (SMTP_USE_TLS=true) |
-| `SMTP_FROM` | Rectella | Envelope-from address (e.g. `noreply@rectella.com` or the ctrlaltinsight@rectella.com service mailbox) |
-| `CREDIT_CONTROL_TO` | Liz | Comma-separated recipient list (e.g. Liz + credit-control inbox) |
-| `DAILY_REPORT_HOUR` | Operator | UTC hour 0–23, default `1` (≈ 01:00 GMT / 02:00 BST) |
+| `GRAPH_TENANT_ID` | NCS (Andrew) | Rectella Entra tenant GUID. Static. |
+| `GRAPH_CLIENT_ID` | NCS (Andrew) | App registration "SysPro Shopify Graph API App" client ID. Static. |
+| `GRAPH_CLIENT_SECRET` | NCS (Andrew) | App secret. **Rotates** — see §10 secret-rotation playbook. |
+| `GRAPH_SENDER_MAILBOX` | NCS (Andrew) | `shopify-service@rectella.com`. Locked by `ApplicationAccessPolicy`. |
+| `CREDIT_CONTROL_TO` | Liz | Comma-separated recipient list. Currently: validation aliases until Liz signs off, then `creditcontrol@rectella.com`. |
+| `ORDER_INTAKE_TO` | Liz / Ops | Comma-separated. Disabled if unset. |
+| `DAILY_REPORT_HOUR` / `ORDER_INTAKE_HOUR` | Operator | UTC hour 0–23. `5` = 06:00 UK BST. Bump to `6` after the Oct DST change. |
+| `HEALTHCHECKS_CASH_URL`, `HEALTHCHECKS_INTAKE_URL` | Operator | Optional Healthchecks.io ping URLs — fires ntfy if a daily send doesn't happen. |
+| `DEAD_LETTER_DIR`, `SENT_REPORT_ARCHIVE_DIR`, `REPORT_STATE_DIR` | Operator | Optional. Default to `~/backups/rectella/{missed-reports,sent-reports,state}/`. |
+| `NTFY_TOPIC` | Operator | Push topic for dead-letter alerts. Reused from the existing pipeline-audit alerts. |
 
-If any required SMTP / recipient field is missing the daily reporter is disabled gracefully and a warning is logged — the service refuses to half-configure mail.
+If any required `GRAPH_*` / recipient field is missing the daily reporter is disabled gracefully and a warning is logged — the service refuses to half-configure mail. The whole resilience layer (healthchecks, dead-letter, archive, state) degrades feature-by-feature when each var is absent.
 
-### 5.5 Why not full automation in Phase 1
+### 5.5 How the fee field is sourced (gateway-by-gateway)
+
+Rectella's Shopify uses two payment gateways, each with a different "fee" data path:
+
+| Gateway | Where the fee lives | Notes |
+|---------|--------------------|-------|
+| **Shopify Payments** (cards) | GraphQL `transactions.fees[].amount` (NOT in REST `transactions.json`) | Returned per fee type — the daily report sums all `fees[]` entries and explicitly excludes `taxAmount` (VAT on the processing fee, owed to HMRC, separate accounting line). |
+| **PayPal** | REST `transactions.json` → `receipt.fee_amount` (string, GBP major units) | GraphQL returns empty `fees[]` for PayPal — the code falls back to parsing `receiptJson` for `fee_amount`. |
+| Manual / bank transfer / COD | No fee data | Logged at Debug, fee = 0 (legitimate, no fee was actually deducted). |
+
+If a known card processor returns zero fee unexpectedly the service emits a `WARN` log _"fee extraction returned zero for known-paid gateway"_ — that's the silent-fail tripwire. Anomaly assertion (§8.1) also flags the email subject with `[⚠ ANOMALY]` if fees aggregate to zero across non-zero transactions.
+
+### 5.6 Why not full automation in Phase 1
 
 Two reasons:
 
@@ -217,7 +249,7 @@ Two reasons:
 
 The daily report is the right Phase 1 design even with full licensing, because it lets Liz keep cash posting under human control while the integration earns trust.
 
-### 5.6 Phase 2 — what changes when licensing is upgraded
+### 5.7 Phase 2 — what changes when licensing is upgraded
 
 When Rectella moves to a SYSPRO licence that includes the AR transaction business objects, Phase 2 swaps the "manual posting from CSV" step for an automated `ARSTPY` polling syncer that runs every 15 minutes, posts gross + bank charges per Shopify order, and uses the Shopify order name as the payment reference. The daily report can stay enabled in parallel as an audit trail.
 
@@ -273,6 +305,26 @@ Detailed playbooks live in [`docs/runbook.md`](runbook.md). The summary view:
 | **Wrong webhook secret** | All webhooks 401. | Update `SHOPIFY_WEBHOOK_SECRET`; Shopify retries within 48 h. |
 | **Stock figures wrong on storefront** | Possible oversell of one or two units between cycles. | Next 15-min cycle corrects it; or trigger immediately by placing any order. |
 | **SYSPRO operator session evicted by human login** | Batch and stock-sync errors until next cycle. | Either: human logs out, or service waits ≤5 min and retries. Reece's dedicated operator account eliminates this. |
+| **Daily report didn't arrive** | Liz / ops missing the morning summary. | Healthchecks.io grace-window alert fires ntfy push at ~06:30 UK. Operator runs `cmd/send-report --type=cash --date=YYYY-MM-DD` to force-resend. If `~/backups/rectella/missed-reports/` has the CSV, attach it manually instead. |
+| **Daily report subject has `[⚠ ANOMALY]`** | Email arrived but the data may be wrong. | Cross-check the figures against Shopify Finances → Payouts. Common causes: Shopify API field renamed (zero fees), webhook flow broke (zero orders weekday), batch processor writeback broke (BBQ1026 fingerprint — all orders stuck in `submitted` with empty SYSPRO number). Page Ctrl Alt Insight (Tier 2). |
+| **Graph mailer auth broke (e.g. NCS rotated the secret)** | Boot log shows `Graph mailer verification failed at boot`; daily sends will dead-letter. | Get new secret from NCS, edit `<dotenv>`, restart. See §10 secret-rotation playbook. |
+
+### 8.1 Monitoring layers in place
+
+The daily-report subsystem has four independent failure-detection layers, deliberately overlapping so no single one is load-bearing:
+
+1. **Boot-time Graph verify** — at service startup, the mailer hits `GET /users/{mailbox}` to confirm tenant + client + secret + mailbox are all wired. On failure, `slog.Warn` in the journal. Does NOT block scheduler start (tokens expire after 1 h anyway — boot success doesn't guarantee 06:00 success). Catches typos and revoked policies immediately.
+
+2. **Row-level data-sanity assertions** — before each send, the report is screened for impossible-looking shapes:
+   - Cash report: non-empty txns + zero summed fees → `[⚠ ANOMALY]` banner. (This is the £0-fees-for-10-days bug fingerprint.)
+   - Intake report: zero orders on a weekday → banner. All payment_amount=0 → banner. All orders in `submitted` with no SYSPRO number → banner.
+   The email still sends — Liz still has the data — but the subject line warns her not to act on it without cross-checking.
+
+3. **Healthchecks.io heartbeat** — after each successful send, the reporter pings `HEALTHCHECKS_CASH_URL` / `HEALTHCHECKS_INTAKE_URL`. If a ping doesn't arrive within Healthchecks' grace window (set to 30 min past the scheduled send), Healthchecks emails / pushes ntfy. This is the "did it fire today?" signal that the operator gets without checking the journal.
+
+4. **Disk dead-letter + ntfy push** — if `mailer.Send` returns an error (auth, network, 5xx), the CSV is written to `~/backups/rectella/missed-reports/YYYY-MM-DD-{cash|intake}.csv` and an ntfy push fires to the operator with the file path. Combined with #3, this turns a delivery failure from "silent loss" into "operator paged with the file in hand".
+
+Plus a **sent-CSV archive** (`~/backups/rectella/sent-reports/`) on every successful send — audit trail independent of the recipient's mailbox. If Liz deletes an email, finance can still reconcile against the original artifact.
 
 The full per-incident triage steps (commands to run, what to look for in logs, who to escalate to) live in the runbook.
 
@@ -343,7 +395,49 @@ A CLI tool can ship in `cmd/intake-report/` — single command that takes a date
 | SYSPRO admin (Rectella) | Melanie Higgins | higginsm@rectella.com |
 | SYSPRO admin (Rectella) | Reece Taylor | taylorr@rectella.com |
 | Finance Director (Rectella) | Liz Buckley | buckleyl@rectella.com |
-| Managed IT | NCS (Ross Tomlinson) | helpdesk@ncs.cloud |
+| Managed IT | NCS (Andrew Charlesworth) | helpdesk@ncs.cloud |
+
+### 10.1 Tier 1 (NCS / Rectella ops) vs Tier 2 (Ctrl Alt Insight) split
+
+Realistic post-handoff support model. Rectella has no in-house developers, so a clean break-and-walk-away is fiction — these are the responsibilities each side owns:
+
+**Tier 1 — NCS / Rectella ops** (covered by their existing managed-IT contract):
+
+- Restart the service (`systemctl --user restart rectella`)
+- Rotate the Microsoft Graph client secret in `<dotenv>` when it expires (see §10.2)
+- Respond to ntfy push notifications on Sebastian's iOS device (or Rectella's chosen pager) for dead-letter alerts
+- Force-resend a missed daily report via `cmd/send-report --type=cash --date=YYYY-MM-DD`
+- Restore Postgres from `~/backups/rectella/` if the NUC dies
+- Manage the VPN tunnel and Cloudflare tunnel
+- Liaise with Liz on recipient-list changes (`CREDIT_CONTROL_TO`, `ORDER_INTAKE_TO`)
+
+**Tier 2 — Ctrl Alt Insight (Sebastian)** (commercial retainer or pay-per-incident):
+
+- Code bugs, schema changes, Shopify / SYSPRO API drift
+- Anomaly-banner investigations (e.g. "report shows £0 fees again")
+- New report formats, additional integrations
+- Performance issues, observability changes
+- Phase 2+ feature work (cancellation propagation, gift cards, ARSPAY automation)
+
+If a Tier 1 incident escalates beyond the runbook's scope, NCS pages Sebastian via the email/Slack channel agreed in the support contract.
+
+### 10.2 Microsoft Graph secret rotation playbook
+
+The Graph client secret in `<dotenv>` (`GRAPH_CLIENT_SECRET`) expires periodically. Entra app-registration secrets default to 6 / 12 / 24 month TTL depending on tenant policy.
+
+**Recommended:** add a calendar reminder 14 days before expiry. NCS owns the app registration ("SysPro Shopify Graph API App", client ID `8a99b519-690c-461c-a4ce-5dd8dd8ea77f`, tenant `b6107a6e-ee35-4cfc-916a-f446a477b9fb`) so they get the Microsoft expiry warning first; runbook `<dotenv>` is updated reactively from there.
+
+**Rotation steps:**
+
+1. NCS issues a new client secret in Entra → "SysPro Shopify Graph API App" → Certificates & secrets.
+2. NCS sends the new secret value to the operator via a secure channel (Bitwarden Send, 1Password share — never email).
+3. Operator edits `<dotenv>`: replace `GRAPH_CLIENT_SECRET=…` line with the new value.
+4. Operator: `systemctl --user restart rectella`.
+5. Operator confirms in the journal: `journalctl --user -u rectella -n 30 --no-pager | grep -i 'graph'` — expect `Graph mailer verified at boot`.
+6. Operator force-sends today's report as a smoke test: `set -a && source <dotenv> && set +a && go run ./cmd/send-report --type=cash --date=$(date -u +%Y-%m-%d)`.
+7. Verify the email lands in the test recipient's inbox (typically Sarah + Sebastian during validation, `creditcontrol@rectella.com` post-cutover).
+
+**Best practice:** keep an encrypted copy of the live `<dotenv>` in the team password manager (Bitwarden / 1Password / Vaultwarden). NCS already use a secrets manager for SQL-admin creds — use the same one. NUC failure should not lose the Graph secret.
 
 ---
 
@@ -378,14 +472,58 @@ A CLI tool can ship in `cmd/intake-report/` — single command that takes a date
 
 ---
 
-## 12. Sign-off checklist
+## 12. Healthchecks.io inventory
+
+The service uses [healthchecks.io](https://healthchecks.io) as the single source of truth for "did this scheduled thing run today?". Five checks total post-handoff, all wired to the same iOS ntfy integration so any failure pages the operator the same way.
+
+| # | Check name | Purpose | Cadence | Grace | Pinged by |
+|---|------------|---------|---------|-------|-----------|
+| 1 | Rectella service health | End-to-end: `/health` through public Cloudflare tunnel → service → DB ping | every 5 min | 10 min | `scripts/rectella-healthcheck.service` (systemd timer; reads `HC_PING_URL_HEALTH`) |
+| 2 | Rectella webhook URL refresh | The job that updates Shopify webhook subscription URLs after Cloudflare tunnel restart | per restart / cron | 1 day | service code (reads `HC_PING_URL_WEBHOOK_UPDATE`) |
+| 3 | Rectella Postgres backup | pg_dump → `~/backups/rectella/` | every 6 h | 7 h | `scripts/backup.sh` (reads `HC_PING_URL_BACKUP`) |
+| 4 | Rectella daily cash-receipt report | The 06:00 UK report fired and emailed credit control | cron `0 5 * * *` UTC | 30 min | `internal/payments/daily_report.go` `SendForDate` (reads `HEALTHCHECKS_CASH_URL`) |
+| 5 | Rectella daily order-intake report | The 06:00 UK ops/finance summary fired | cron `0 5 * * *` UTC | 30 min | `internal/payments/intake.go` `SendForDate` (reads `HEALTHCHECKS_INTAKE_URL`) |
+
+### 12.1 What "fails" means
+
+If any check misses its window, healthchecks.io fires the configured notification — for Rectella that's a single ntfy push to the operator's phone (max priority). The operator follows the runbook (`docs/runbook.md`) to triage; if it's the daily-report check that failed, look in `~/backups/rectella/missed-reports/` for the dead-lettered CSV first (it should be there), then force-resend with `cmd/send-report --type={cash|intake} --date=YYYY-MM-DD`.
+
+### 12.2 Setting up checks #4 and #5 (NCS, post-handoff if not already done)
+
+Both new checks share the same shape:
+
+1. healthchecks.io → **Add Check**.
+2. Name: `Rectella daily cash-receipt report` (or intake).
+3. Schedule type: **Cron** → `0 5 * * *`, timezone **UTC**.
+4. Grace: **30 minutes**.
+5. Tags: `rectella`, `report`.
+6. Integrations: tick the same ntfy integration the other 3 checks use (so all 5 share one alerting channel).
+7. Save → copy ping URL.
+8. In `<dotenv>`:
+   ```
+   HEALTHCHECKS_CASH_URL=https://hc-ping.com/<cash-uuid>
+   HEALTHCHECKS_INTAKE_URL=https://hc-ping.com/<intake-uuid>
+   ```
+9. `systemctl --user restart rectella`.
+10. Wait for the next 06:00 UK fire — check the dashboard for green pings within 30 min.
+
+### 12.3 DST note
+
+`DAILY_REPORT_HOUR=5` and `ORDER_INTAKE_HOUR=5` give 06:00 BST in summer (now) and 05:00 GMT in winter. The healthchecks.io cron schedule also uses UTC and is unaffected. To keep 06:00 UK stable year-round, bump both env vars to `6` after the late-October DST change. Calendar reminder for 2026-10-25.
+
+---
+
+## 13. Sign-off checklist
 
 For Rectella to consider Phase 1 complete, confirm:
 
 - [ ] Operator runbook reviewed and approved by Melanie / Reece
 - [ ] Three integrations (order, stock, fulfilment) running on production infrastructure
 - [ ] Reconciliation sweeper enabled (`RECONCILIATION_INTERVAL=15m`)
-- [ ] Daily CSV cash-receipt email (or ARSPAY automation if delivered) reaching credit control
+- [ ] Daily cash-receipt email (Graph API) reaching credit control + Liz CC'd
+- [ ] Daily order-intake email (Graph API) reaching ops/finance
+- [ ] All 5 healthchecks.io checks (§12) live + wired to ntfy
+- [ ] Encrypted backup of `<dotenv>` stored in NCS's password manager
 - [ ] Intake-comparison report agreed and Sarah's view in place
 - [ ] Escalation contacts circulated to Rectella ops
 

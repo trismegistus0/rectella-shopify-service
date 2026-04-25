@@ -26,15 +26,35 @@ type EmailSender interface {
 // yesterday had zero transactions the email is still sent so credit
 // control knows the job is alive.
 type DailyReporter struct {
-	source     TransactionSource
-	mailer     EmailSender
-	recipients []string
-	storeName  string
-	hour       int
-	now        func() time.Time
-	logger     *slog.Logger
+	source       TransactionSource
+	mailer       EmailSender
+	recipients   []string
+	storeName    string
+	hour         int
+	now          func() time.Time
+	logger       *slog.Logger
+	healthcheckURL string
+	deadLetterDir string
+	archiveDir    string
+	stateDir      string
+	ntfyTopic     string
+	coverNote     string // optional pre-body paragraph for one-off operator sends
 
 	mu sync.Mutex
+}
+
+// SetCoverNote sets a string that will be prepended to the email body
+// on the next SendForRange / SendForDate call. Use sparingly — this
+// is for one-off operator sends (e.g. the credit-control cutover
+// announcement). The scheduled daily path leaves it empty.
+func (r *DailyReporter) SetCoverNote(note string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if note == "" {
+		r.coverNote = ""
+		return
+	}
+	r.coverNote = note + "\n\n"
 }
 
 // DailyReporterConfig bundles inputs for NewDailyReporter.
@@ -45,6 +65,13 @@ type DailyReporterConfig struct {
 	StoreName  string // used in the email subject + filename
 	Hour       int    // UTC hour, 0-23
 	Logger     *slog.Logger
+
+	// Resilience layer — all optional, features degrade gracefully.
+	HealthcheckURL string // GET ping after each successful send (Healthchecks.io etc.)
+	DeadLetterDir  string // where to drop the CSV if Send fails
+	ArchiveDir     string // where to archive every successful CSV (audit trail)
+	StateDir       string // where to persist last-send date (idempotency on restart)
+	NtfyTopic      string // ntfy push topic for dead-letter alerts
 }
 
 // NewDailyReporter validates inputs and returns a reporter. Returns an
@@ -67,13 +94,18 @@ func NewDailyReporter(cfg DailyReporterConfig) (*DailyReporter, error) {
 		cfg.Logger = slog.Default()
 	}
 	return &DailyReporter{
-		source:     cfg.Source,
-		mailer:     cfg.Mailer,
-		recipients: cfg.Recipients,
-		storeName:  cfg.StoreName,
-		hour:       cfg.Hour,
-		now:        time.Now,
-		logger:     cfg.Logger,
+		source:         cfg.Source,
+		mailer:         cfg.Mailer,
+		recipients:     cfg.Recipients,
+		storeName:      cfg.StoreName,
+		hour:           cfg.Hour,
+		now:            time.Now,
+		logger:         cfg.Logger,
+		healthcheckURL: cfg.HealthcheckURL,
+		deadLetterDir:  cfg.DeadLetterDir,
+		archiveDir:     cfg.ArchiveDir,
+		stateDir:       cfg.StateDir,
+		ntfyTopic:      cfg.NtfyTopic,
 	}, nil
 }
 
@@ -88,7 +120,12 @@ func (r *DailyReporter) Run(ctx context.Context) {
 		"hour_utc", r.hour,
 		"recipients", len(r.recipients),
 	)
-	var lastSent time.Time
+	// Idempotency: persist last-fired date to disk so an operator restart
+	// between r.hour and r.hour+1 doesn't re-fire today's send. Falls
+	// back to in-memory zero-value if the state dir isn't configured (in
+	// which case restart-during-the-fire-window can double-send — known
+	// limitation, documented in the handover §8).
+	lastSent := readLastSent(r.stateDir, "cash")
 	check := func() {
 		now := r.now().UTC()
 		if now.Hour() != r.hour {
@@ -104,6 +141,7 @@ func (r *DailyReporter) Run(ctx context.Context) {
 			return
 		}
 		lastSent = today
+		_ = writeLastSent(r.stateDir, "cash", today)
 	}
 
 	check()
@@ -118,6 +156,90 @@ func (r *DailyReporter) Run(ctx context.Context) {
 			check()
 		}
 	}
+}
+
+// SendForRange pulls all transactions in [start, end) UTC and emails one
+// bulk CSV via BuildRangeCSV. Used by the operator backfill flow to
+// send a multi-day validation email. Recipient list and store name come
+// from the same DailyReporterConfig as SendForDate.
+func (r *DailyReporter) SendForRange(ctx context.Context, start, end time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !start.Before(end) {
+		return fmt.Errorf("invalid range: start %s not before end %s",
+			start.Format("2006-01-02"), end.Format("2006-01-02"))
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	txns, err := r.source.FetchOrdersInWindow(fetchCtx, start, end)
+	if err != nil {
+		return fmt.Errorf("fetching transactions: %w", err)
+	}
+
+	csv, err := BuildRangeCSV(start, end, txns)
+	if err != nil {
+		return fmt.Errorf("building csv: %w", err)
+	}
+
+	gross, fee, net, count := SummariseTotals(txns)
+	storeTag := r.storeName
+	if storeTag == "" {
+		storeTag = "Shopify"
+	}
+	endLabel := end.AddDate(0, 0, -1).Format("2006-01-02") // inclusive end-date
+	subject := fmt.Sprintf("[%s] Cash receipts — %s to %s (%d transactions)",
+		storeTag, start.Format("2006-01-02"), endLabel, count)
+	body := fmt.Sprintf(
+		"%s"+
+			"Cash-receipt backfill report.\n"+
+			"Post against SYSPRO customer: WEBS01.\n\n"+
+			"Window:        %s to %s (UTC)\n"+
+			"Transactions:  %d\n"+
+			"Gross:         £%.2f\n"+
+			"Fees:          £%.2f\n"+
+			"Net:           £%.2f\n\n"+
+			"Per-day breakdown attached.\n",
+		r.coverNote, start.Format("2006-01-02"), endLabel, count, gross, fee, net,
+	)
+	if anomaly := ValidateCashReceiptCSV(txns); anomaly != "" {
+		subject = "[⚠ ANOMALY] " + subject
+		body = "*** DATA ANOMALY DETECTED ***\n" + anomaly + "\n*** Treat the figures below with caution and cross-check against Shopify admin. ***\n\n" + body
+		r.logger.Error("range cash-receipt anomaly detected",
+			"start", start.Format("2006-01-02"), "end", endLabel, "anomaly", anomaly)
+	}
+	att := &Attachment{
+		Filename:    fmt.Sprintf("cash-receipts-%s-to-%s.csv", start.Format("2006-01-02"), endLabel),
+		ContentType: "text/csv; charset=utf-8",
+		Body:        csv,
+	}
+	sendCtx, sendCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer sendCancel()
+	if err := r.mailer.Send(sendCtx, r.recipients, subject, body, att); err != nil {
+		dlPath, dlErr := writeDeadLetter(r.deadLetterDir, "cash-range", start, csv)
+		r.logger.Error("range report send failed — CSV preserved",
+			"start", start.Format("2006-01-02"), "end", endLabel,
+			"send_error", err, "dead_letter_path", dlPath, "dead_letter_error", dlErr)
+		pingNtfyDeadLetter(ctx, r.ntfyTopic, "cash-range", start, dlPath, err)
+		return fmt.Errorf("sending email: %w", err)
+	}
+	if archPath, archErr := archiveSentCSVRange(r.archiveDir, "cash", start, end, csv); archErr != nil {
+		r.logger.Warn("sent-CSV archive failed (best-effort)", "error", archErr)
+	} else if archPath != "" {
+		r.logger.Debug("sent CSV archived", "path", archPath)
+	}
+	pingHealthcheck(ctx, r.healthcheckURL)
+	r.logger.Info("range report sent",
+		"start", start.Format("2006-01-02"),
+		"end", endLabel,
+		"count", count,
+		"gross", gross,
+		"fee", fee,
+		"net", net,
+	)
+	return nil
 }
 
 // SendForDate pulls the transactions that settled on the given date
@@ -150,15 +272,28 @@ func (r *DailyReporter) SendForDate(ctx context.Context, date time.Time) error {
 		storeTag = "Shopify"
 	}
 	subject := fmt.Sprintf("[%s] Daily cash receipts — %s (%d)", storeTag, start.Format("2006-01-02"), count)
+	intro := fmt.Sprintf("Daily cash-receipt report for %s.\nPost against SYSPRO customer: WEBS01.\n\n",
+		start.Format("2006-01-02"))
+	if count == 0 {
+		intro = fmt.Sprintf("Daily cash-receipt report for %s.\nPost against SYSPRO customer: WEBS01.\n\n"+
+			"No paid Shopify transactions for this date — this email confirms the daily process ran successfully.\n\n",
+			start.Format("2006-01-02"))
+	}
 	body := fmt.Sprintf(
-		"Daily cash-receipt report for %s.\n\n"+
+		"%s%s"+
 			"Transactions: %d\n"+
-			"Gross:        %.2f\n"+
-			"Fees:         %.2f\n"+
-			"Net:          %.2f\n\n"+
+			"Gross:        £%.2f\n"+
+			"Fees:         £%.2f\n"+
+			"Net:          £%.2f\n\n"+
 			"Full breakdown attached.\n",
-		start.Format("2006-01-02"), count, gross, fee, net,
+		r.coverNote, intro, count, gross, fee, net,
 	)
+	if anomaly := ValidateCashReceiptCSV(txns); anomaly != "" {
+		subject = "[⚠ ANOMALY] " + subject
+		body = "*** DATA ANOMALY DETECTED ***\n" + anomaly + "\n*** Treat the figures below with caution and cross-check against Shopify admin. ***\n\n" + body
+		r.logger.Error("cash-receipt anomaly detected",
+			"date", start.Format("2006-01-02"), "anomaly", anomaly)
+	}
 	att := &Attachment{
 		Filename:    fmt.Sprintf("cash-receipts-%s.csv", start.Format("2006-01-02")),
 		ContentType: "text/csv; charset=utf-8",
@@ -167,8 +302,19 @@ func (r *DailyReporter) SendForDate(ctx context.Context, date time.Time) error {
 	sendCtx, sendCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer sendCancel()
 	if err := r.mailer.Send(sendCtx, r.recipients, subject, body, att); err != nil {
+		dlPath, dlErr := writeDeadLetter(r.deadLetterDir, "cash", start, csv)
+		r.logger.Error("daily report send failed — CSV preserved",
+			"date", start.Format("2006-01-02"),
+			"send_error", err, "dead_letter_path", dlPath, "dead_letter_error", dlErr)
+		pingNtfyDeadLetter(ctx, r.ntfyTopic, "cash", start, dlPath, err)
 		return fmt.Errorf("sending email: %w", err)
 	}
+	if archPath, archErr := archiveSentCSV(r.archiveDir, "cash", start, csv); archErr != nil {
+		r.logger.Warn("sent-CSV archive failed (best-effort)", "error", archErr)
+	} else if archPath != "" {
+		r.logger.Debug("sent CSV archived", "path", archPath)
+	}
+	pingHealthcheck(ctx, r.healthcheckURL)
 	r.logger.Info("daily report sent",
 		"date", start.Format("2006-01-02"),
 		"count", count,
