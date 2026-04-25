@@ -191,20 +191,25 @@ sequenceDiagram
 
 On send failure (Graph 5xx, 401 after retry, network blip): the CSV is written to `~/backups/rectella/missed-reports/YYYY-MM-DD-cash.csv`, an ntfy push fires to the operator with the file path, the heartbeat is **not** sent (Healthchecks.io grace window expires → secondary ntfy alert). Operator re-sends with `cmd/send-report --type=cash --date=YYYY-MM-DD`.
 
-### 5.3 CSV format (per Sarah, 2026-04-17)
+### 5.3 CSV format (per Sarah, 2026-04-17, updated 2026-04-25)
 
-Four columns, one row per settled Shopify transaction for the prior calendar day (UTC). Currency values prefixed with `£`.
+Five columns, one row per settled Shopify transaction for the prior calendar day (UTC). Currency values prefixed with `£`.
 
 | Column | Meaning |
 |--------|---------|
+| `Customer (SYSPRO)` | Always `WEBS01` — the SYSPRO customer account every Shopify order posts against. Saves credit control looking it up. |
 | `Shopify Reference` | Shopify order name (e.g. `#BBQ1001`) — use as payment reference in SYSPRO ARSPAY UI |
 | `Order Value` | Gross — what the customer paid (post into the `Amount` field) |
-| `Charges` | Bank / Stripe fee (post into the `Bank charges` field) |
+| `Charges` | Bank / Stripe / PayPal fee (post into the `Bank charges` field) — see §5.5 for which gateway returns what |
 | `Receipt Value` | Order Value − Charges — the figure that hits the cashbook |
 
-**Example row:** `#BBQ1001,£8.00,£1.12,£6.88`
+**Example row:** `WEBS01,#BBQ1001,£8.00,£1.12,£6.88`
 
-The email body also summarises gross/fee/net/count in plain text so credit control can sanity-check totals without opening the attachment.
+The email body also summarises gross/fee/net/count in plain text so credit control can sanity-check totals without opening the attachment, and explicitly states "Post against SYSPRO customer: WEBS01" so the destination account is unambiguous.
+
+**Zero-order days**: an email is sent every day, even if zero Shopify transactions were paid the prior day. The body says explicitly _"No paid Shopify transactions for this date — this email confirms the daily process ran successfully"_ so credit control knows the absence is intentional, not a system failure.
+
+**Range / backfill report** (`cmd/send-report --type=cash --from=YYYY-MM-DD --to=YYYY-MM-DD`): adds a leading `Date` column so multi-day rows are sortable. Same five trailing columns. Used for one-off operator sends (e.g. the credit-control cutover announcement on first launch).
 
 ### 5.4 Operating prerequisites
 
@@ -223,7 +228,19 @@ The email body also summarises gross/fee/net/count in plain text so credit contr
 
 If any required `GRAPH_*` / recipient field is missing the daily reporter is disabled gracefully and a warning is logged — the service refuses to half-configure mail. The whole resilience layer (healthchecks, dead-letter, archive, state) degrades feature-by-feature when each var is absent.
 
-### 5.5 Why not full automation in Phase 1
+### 5.5 How the fee field is sourced (gateway-by-gateway)
+
+Rectella's Shopify uses two payment gateways, each with a different "fee" data path:
+
+| Gateway | Where the fee lives | Notes |
+|---------|--------------------|-------|
+| **Shopify Payments** (cards) | GraphQL `transactions.fees[].amount` (NOT in REST `transactions.json`) | Returned per fee type — the daily report sums all `fees[]` entries and explicitly excludes `taxAmount` (VAT on the processing fee, owed to HMRC, separate accounting line). |
+| **PayPal** | REST `transactions.json` → `receipt.fee_amount` (string, GBP major units) | GraphQL returns empty `fees[]` for PayPal — the code falls back to parsing `receiptJson` for `fee_amount`. |
+| Manual / bank transfer / COD | No fee data | Logged at Debug, fee = 0 (legitimate, no fee was actually deducted). |
+
+If a known card processor returns zero fee unexpectedly the service emits a `WARN` log _"fee extraction returned zero for known-paid gateway"_ — that's the silent-fail tripwire. Anomaly assertion (§8.1) also flags the email subject with `[⚠ ANOMALY]` if fees aggregate to zero across non-zero transactions.
+
+### 5.6 Why not full automation in Phase 1
 
 Two reasons:
 
@@ -232,7 +249,7 @@ Two reasons:
 
 The daily report is the right Phase 1 design even with full licensing, because it lets Liz keep cash posting under human control while the integration earns trust.
 
-### 5.6 Phase 2 — what changes when licensing is upgraded
+### 5.7 Phase 2 — what changes when licensing is upgraded
 
 When Rectella moves to a SYSPRO licence that includes the AR transaction business objects, Phase 2 swaps the "manual posting from CSV" step for an automated `ARSTPY` polling syncer that runs every 15 minutes, posts gross + bank charges per Shopify order, and uses the Shopify order name as the payment reference. The daily report can stay enabled in parallel as an audit trail.
 
@@ -455,14 +472,58 @@ The Graph client secret in `<dotenv>` (`GRAPH_CLIENT_SECRET`) expires periodical
 
 ---
 
-## 12. Sign-off checklist
+## 12. Healthchecks.io inventory
+
+The service uses [healthchecks.io](https://healthchecks.io) as the single source of truth for "did this scheduled thing run today?". Five checks total post-handoff, all wired to the same iOS ntfy integration so any failure pages the operator the same way.
+
+| # | Check name | Purpose | Cadence | Grace | Pinged by |
+|---|------------|---------|---------|-------|-----------|
+| 1 | Rectella service health | End-to-end: `/health` through public Cloudflare tunnel → service → DB ping | every 5 min | 10 min | `scripts/rectella-healthcheck.service` (systemd timer; reads `HC_PING_URL_HEALTH`) |
+| 2 | Rectella webhook URL refresh | The job that updates Shopify webhook subscription URLs after Cloudflare tunnel restart | per restart / cron | 1 day | service code (reads `HC_PING_URL_WEBHOOK_UPDATE`) |
+| 3 | Rectella Postgres backup | pg_dump → `~/backups/rectella/` | every 6 h | 7 h | `scripts/backup.sh` (reads `HC_PING_URL_BACKUP`) |
+| 4 | Rectella daily cash-receipt report | The 06:00 UK report fired and emailed credit control | cron `0 5 * * *` UTC | 30 min | `internal/payments/daily_report.go` `SendForDate` (reads `HEALTHCHECKS_CASH_URL`) |
+| 5 | Rectella daily order-intake report | The 06:00 UK ops/finance summary fired | cron `0 5 * * *` UTC | 30 min | `internal/payments/intake.go` `SendForDate` (reads `HEALTHCHECKS_INTAKE_URL`) |
+
+### 12.1 What "fails" means
+
+If any check misses its window, healthchecks.io fires the configured notification — for Rectella that's a single ntfy push to the operator's phone (max priority). The operator follows the runbook (`docs/runbook.md`) to triage; if it's the daily-report check that failed, look in `~/backups/rectella/missed-reports/` for the dead-lettered CSV first (it should be there), then force-resend with `cmd/send-report --type={cash|intake} --date=YYYY-MM-DD`.
+
+### 12.2 Setting up checks #4 and #5 (NCS, post-handoff if not already done)
+
+Both new checks share the same shape:
+
+1. healthchecks.io → **Add Check**.
+2. Name: `Rectella daily cash-receipt report` (or intake).
+3. Schedule type: **Cron** → `0 5 * * *`, timezone **UTC**.
+4. Grace: **30 minutes**.
+5. Tags: `rectella`, `report`.
+6. Integrations: tick the same ntfy integration the other 3 checks use (so all 5 share one alerting channel).
+7. Save → copy ping URL.
+8. In `<dotenv>`:
+   ```
+   HEALTHCHECKS_CASH_URL=https://hc-ping.com/<cash-uuid>
+   HEALTHCHECKS_INTAKE_URL=https://hc-ping.com/<intake-uuid>
+   ```
+9. `systemctl --user restart rectella`.
+10. Wait for the next 06:00 UK fire — check the dashboard for green pings within 30 min.
+
+### 12.3 DST note
+
+`DAILY_REPORT_HOUR=5` and `ORDER_INTAKE_HOUR=5` give 06:00 BST in summer (now) and 05:00 GMT in winter. The healthchecks.io cron schedule also uses UTC and is unaffected. To keep 06:00 UK stable year-round, bump both env vars to `6` after the late-October DST change. Calendar reminder for 2026-10-25.
+
+---
+
+## 13. Sign-off checklist
 
 For Rectella to consider Phase 1 complete, confirm:
 
 - [ ] Operator runbook reviewed and approved by Melanie / Reece
 - [ ] Three integrations (order, stock, fulfilment) running on production infrastructure
 - [ ] Reconciliation sweeper enabled (`RECONCILIATION_INTERVAL=15m`)
-- [ ] Daily CSV cash-receipt email (or ARSPAY automation if delivered) reaching credit control
+- [ ] Daily cash-receipt email (Graph API) reaching credit control + Liz CC'd
+- [ ] Daily order-intake email (Graph API) reaching ops/finance
+- [ ] All 5 healthchecks.io checks (§12) live + wired to ntfy
+- [ ] Encrypted backup of `<dotenv>` stored in NCS's password manager
 - [ ] Intake-comparison report agreed and Sarah's view in place
 - [ ] Escalation contacts circulated to Rectella ops
 

@@ -41,6 +41,8 @@ func run() error {
 	dateStr := flag.String("date", "", "YYYY-MM-DD; default = yesterday UTC. Mutually exclusive with --from/--to.")
 	fromStr := flag.String("from", "", "YYYY-MM-DD; backfill range start (inclusive). Pairs with --to.")
 	toStr := flag.String("to", "", "YYYY-MM-DD; backfill range end (inclusive). Pairs with --from.")
+	coverNote := flag.String("cover-note", "", "Optional intro paragraph prepended to the email body. Useful for one-off operator sends like the credit-control cutover announcement. May contain newlines.")
+	coverNoteFile := flag.String("cover-note-file", "", "Path to a text file whose contents become the cover note. Lets you keep multi-paragraph copy out of the shell command.")
 	flag.Parse()
 
 	if *reportType != "cash" && *reportType != "intake" {
@@ -128,6 +130,18 @@ func run() error {
 		})
 		if err != nil {
 			return fmt.Errorf("cash reporter init: %w", err)
+		}
+		// Resolve cover note (file beats inline if both provided).
+		note := *coverNote
+		if *coverNoteFile != "" {
+			b, err := os.ReadFile(*coverNoteFile)
+			if err != nil {
+				return fmt.Errorf("reading --cover-note-file: %w", err)
+			}
+			note = string(b)
+		}
+		if note != "" {
+			reporter.SetCoverNote(note)
 		}
 		if rangeMode {
 			if err := reporter.SendForRange(ctx, rangeStart, rangeEnd); err != nil {

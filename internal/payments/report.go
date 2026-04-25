@@ -35,6 +35,7 @@ func BuildCSV(date time.Time, txns []ShopifyTransaction) ([]byte, error) {
 	buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(&buf)
 	header := []string{
+		"Customer (SYSPRO)",
 		"Shopify Reference",
 		"Order Value",
 		"Charges",
@@ -45,10 +46,11 @@ func BuildCSV(date time.Time, txns []ShopifyTransaction) ([]byte, error) {
 	}
 	for _, t := range sorted {
 		// £ prefix matches Sarah's specified format (e.g.
-		// "#BBQ1001  £8.00  £1.12  £6.88"). Excel renders the cell as
-		// the literal string "£8.00" — credit control can sum the
-		// numeric portion via SUMPRODUCT or by stripping the prefix.
+		// "WEBS01  #BBQ1001  £8.00  £1.12  £6.88"). The Customer column
+		// is always WEBS01 — single-customer Phase 1 invariant — so credit
+		// control can post each row directly to that account in ARSPAY.
 		row := []string{
+			"WEBS01",
 			t.OrderNumber,
 			fmt.Sprintf("£%.2f", t.Gross),
 			fmt.Sprintf("£%.2f", t.Fee),
@@ -142,6 +144,7 @@ func BuildRangeCSV(start, end time.Time, txns []ShopifyTransaction) ([]byte, err
 	w := csv.NewWriter(&buf)
 	header := []string{
 		"Date",
+		"Customer (SYSPRO)",
 		"Shopify Reference",
 		"Order Value",
 		"Charges",
@@ -153,6 +156,7 @@ func BuildRangeCSV(start, end time.Time, txns []ShopifyTransaction) ([]byte, err
 	for _, t := range sorted {
 		row := []string{
 			t.ProcessedAt.UTC().Format("2006-01-02"),
+			"WEBS01",
 			t.OrderNumber,
 			fmt.Sprintf("£%.2f", t.Gross),
 			fmt.Sprintf("£%.2f", t.Fee),

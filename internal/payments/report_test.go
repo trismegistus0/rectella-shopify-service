@@ -67,7 +67,7 @@ func TestBuildRangeCSV_HeaderAndDateColumn(t *testing.T) {
 		t.Fatalf("BuildRangeCSV: %v", err)
 	}
 	got := stripBOM(string(out))
-	if !strings.HasPrefix(got, "Date,Shopify Reference,Order Value,Charges,Receipt Value\n") {
+	if !strings.HasPrefix(got, "Date,Customer (SYSPRO),Shopify Reference,Order Value,Charges,Receipt Value\n") {
 		t.Errorf("wrong header: %q", got)
 	}
 	// Earliest first (sort stable on ProcessedAt).
@@ -75,10 +75,10 @@ func TestBuildRangeCSV_HeaderAndDateColumn(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected header + 2 rows, got %d lines:\n%s", len(lines), got)
 	}
-	if !strings.HasPrefix(lines[1], "2026-04-01,#BBQ1001,") {
+	if !strings.HasPrefix(lines[1], "2026-04-01,WEBS01,#BBQ1001,") {
 		t.Errorf("first row wrong, got %q", lines[1])
 	}
-	if !strings.HasPrefix(lines[2], "2026-04-24,#BBQ1042,") {
+	if !strings.HasPrefix(lines[2], "2026-04-24,WEBS01,#BBQ1042,") {
 		t.Errorf("second row wrong, got %q", lines[2])
 	}
 	if !strings.Contains(lines[1], "£8.00") || !strings.Contains(lines[1], "£0.30") {
@@ -108,7 +108,7 @@ func TestBuildCSV_Empty(t *testing.T) {
 	got := string(out)
 	// Strip the leading UTF-8 BOM so the header check matches Sarah's spec.
 	got = strings.TrimPrefix(got, string([]byte{0xEF, 0xBB, 0xBF}))
-	if !strings.HasPrefix(got, "Shopify Reference,Order Value,Charges,Receipt Value") {
+	if !strings.HasPrefix(got, "Customer (SYSPRO),Shopify Reference,Order Value,Charges,Receipt Value") {
 		t.Errorf("missing or wrong header (per Sarah's spec), got: %q", got)
 	}
 	if strings.Count(got, "\n") != 1 {
@@ -153,11 +153,11 @@ func TestBuildCSV_HappyPath(t *testing.T) {
 	// Should be sorted by processed_at ascending — #BBQ1001 first.
 	// Sarah's example: "#BBQ1001  £8.00  £1.12  £6.88" — verify
 	// the format matches exactly (£ prefix, 2dp).
-	want1 := "#BBQ1001,£8.00,£1.12,£6.88"
+	want1 := "WEBS01,#BBQ1001,£8.00,£1.12,£6.88"
 	if lines[1] != want1 {
 		t.Errorf("row 1 want %q, got %q", want1, lines[1])
 	}
-	want2 := "#BBQ1002,£75.00,£2.25,£72.75"
+	want2 := "WEBS01,#BBQ1002,£75.00,£2.25,£72.75"
 	if lines[2] != want2 {
 		t.Errorf("row 2 want %q, got %q", want2, lines[2])
 	}

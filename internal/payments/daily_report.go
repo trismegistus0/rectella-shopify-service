@@ -38,8 +38,23 @@ type DailyReporter struct {
 	archiveDir    string
 	stateDir      string
 	ntfyTopic     string
+	coverNote     string // optional pre-body paragraph for one-off operator sends
 
 	mu sync.Mutex
+}
+
+// SetCoverNote sets a string that will be prepended to the email body
+// on the next SendForRange / SendForDate call. Use sparingly — this
+// is for one-off operator sends (e.g. the credit-control cutover
+// announcement). The scheduled daily path leaves it empty.
+func (r *DailyReporter) SetCoverNote(note string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if note == "" {
+		r.coverNote = ""
+		return
+	}
+	r.coverNote = note + "\n\n"
 }
 
 // DailyReporterConfig bundles inputs for NewDailyReporter.
@@ -178,14 +193,16 @@ func (r *DailyReporter) SendForRange(ctx context.Context, start, end time.Time) 
 	subject := fmt.Sprintf("[%s] Cash receipts — %s to %s (%d transactions)",
 		storeTag, start.Format("2006-01-02"), endLabel, count)
 	body := fmt.Sprintf(
-		"Cash-receipt backfill report.\n\n"+
+		"%s"+
+			"Cash-receipt backfill report.\n"+
+			"Post against SYSPRO customer: WEBS01.\n\n"+
 			"Window:        %s to %s (UTC)\n"+
 			"Transactions:  %d\n"+
 			"Gross:         £%.2f\n"+
 			"Fees:          £%.2f\n"+
 			"Net:           £%.2f\n\n"+
 			"Per-day breakdown attached.\n",
-		start.Format("2006-01-02"), endLabel, count, gross, fee, net,
+		r.coverNote, start.Format("2006-01-02"), endLabel, count, gross, fee, net,
 	)
 	if anomaly := ValidateCashReceiptCSV(txns); anomaly != "" {
 		subject = "[⚠ ANOMALY] " + subject
@@ -255,14 +272,21 @@ func (r *DailyReporter) SendForDate(ctx context.Context, date time.Time) error {
 		storeTag = "Shopify"
 	}
 	subject := fmt.Sprintf("[%s] Daily cash receipts — %s (%d)", storeTag, start.Format("2006-01-02"), count)
+	intro := fmt.Sprintf("Daily cash-receipt report for %s.\nPost against SYSPRO customer: WEBS01.\n\n",
+		start.Format("2006-01-02"))
+	if count == 0 {
+		intro = fmt.Sprintf("Daily cash-receipt report for %s.\nPost against SYSPRO customer: WEBS01.\n\n"+
+			"No paid Shopify transactions for this date — this email confirms the daily process ran successfully.\n\n",
+			start.Format("2006-01-02"))
+	}
 	body := fmt.Sprintf(
-		"Daily cash-receipt report for %s.\n\n"+
+		"%s%s"+
 			"Transactions: %d\n"+
-			"Gross:        %.2f\n"+
-			"Fees:         %.2f\n"+
-			"Net:          %.2f\n\n"+
+			"Gross:        £%.2f\n"+
+			"Fees:         £%.2f\n"+
+			"Net:          £%.2f\n\n"+
 			"Full breakdown attached.\n",
-		start.Format("2006-01-02"), count, gross, fee, net,
+		r.coverNote, intro, count, gross, fee, net,
 	)
 	if anomaly := ValidateCashReceiptCSV(txns); anomaly != "" {
 		subject = "[⚠ ANOMALY] " + subject
