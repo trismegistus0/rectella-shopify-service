@@ -82,6 +82,16 @@ func (f *TransactionsFetcher) FetchOrdersInWindow(ctx context.Context, since, un
 	}
 	var all []ShopifyTransaction
 	for _, o := range orders {
+		// Skip Shopify-flagged test orders. Shopify exposes a top-level
+		// boolean `test` on each order — true when the storefront was in
+		// test mode or an admin manually placed a test order. These are
+		// not real money movements and must not appear in credit-control
+		// reports. Confirmed against Sarah on 2026-04-25 after the
+		// initial backfill leaked BBQ1020-1023.
+		if o.Test {
+			f.logger.Debug("skipping test order", "order", o.Name, "id", o.ID)
+			continue
+		}
 		txns, err := f.FetchForOrder(ctx, o.ID, o.Name, o.Email)
 		if err != nil {
 			f.logger.Warn("fetching order transactions", "order_id", o.ID, "error", err)
@@ -89,6 +99,19 @@ func (f *TransactionsFetcher) FetchOrdersInWindow(ctx context.Context, since, un
 		}
 		for _, t := range txns {
 			if t.ProcessedAt.Before(since) || !t.ProcessedAt.Before(until) {
+				continue
+			}
+			// Skip "manual" gateway — used in Shopify admin to mark an
+			// order paid by a non-online method (cash on collection,
+			// bank transfer, hand-keyed). Rectella's B2C storefront
+			// doesn't legitimately use this in Phase 1; every "manual"
+			// payment seen so far has been a test/admin operator
+			// adjusting an order. Excluded per Sarah 2026-04-25.
+			// If Rectella ever ships legitimate manual payments,
+			// remove this filter and accept the £0 fee rows.
+			if t.PaymentGateway == "manual" {
+				f.logger.Debug("skipping manual-gateway transaction",
+					"order", o.Name, "txn_id", t.ID)
 				continue
 			}
 			all = append(all, t)
@@ -106,6 +129,7 @@ type orderSummary struct {
 	ID    int64  `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+	Test  bool   `json:"test"`
 }
 
 type ordersResponse struct {
@@ -123,7 +147,7 @@ func (f *TransactionsFetcher) listOrdersInWindow(ctx context.Context, since, unt
 	q.Set("processed_at_min", since.UTC().Format(time.RFC3339))
 	q.Set("processed_at_max", until.UTC().Format(time.RFC3339))
 	q.Set("limit", "250")
-	q.Set("fields", "id,name,email,processed_at")
+	q.Set("fields", "id,name,email,processed_at,test")
 	u.RawQuery = q.Encode()
 
 	next := u.String()
