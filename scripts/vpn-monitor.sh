@@ -188,22 +188,26 @@ fi
 # 6a. Check Mullvad is still protecting external traffic (only if local CLI).
 # On the NUC, Mullvad runs on the Flint 3 router — no local mullvad CLI and
 # these checks would false-positive. Skip cleanly when the CLI isn't present.
+# Mullvad state is a user choice on dev workstations; log to journal only,
+# never notify or count as an unhealed issue. IP-leak (6b) stays noisy.
 if command -v mullvad >/dev/null 2>&1; then
   mullvad_status=$(mullvad status 2>/dev/null || echo "unknown")
-  if ! echo "$mullvad_status" | grep -q "Connected"; then
-    warn "Mullvad not connected: $mullvad_status"
-    issues=$((issues + 1))
-    notify-send -u critical "VPN Monitor" "Mullvad disconnected!" 2>/dev/null || true
-    # Don't auto-fix Mullvad — user's responsibility.
+  mullvad_connected=false
+  if echo "$mullvad_status" | grep -q "Connected"; then
+    mullvad_connected=true
+  else
+    log "Mullvad not connected (user state): $mullvad_status"
   fi
 
-  # 6b. Check external IP matches Mullvad (no leak).
-  external_ip=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
-  mullvad_ip=$(mullvad status 2>/dev/null | grep -oP 'IPv4: \K[0-9.]+' || echo "")
-  if [[ -n "$external_ip" && -n "$mullvad_ip" && "$external_ip" != "$mullvad_ip" ]]; then
-    warn "IP LEAK DETECTED: external=$external_ip, expected Mullvad=$mullvad_ip"
-    issues=$((issues + 1))
-    notify-send -u critical "VPN Monitor" "IP leak detected! $external_ip" 2>/dev/null || true
+  # 6b. Check external IP matches Mullvad (no leak). Only meaningful when Mullvad is up.
+  if $mullvad_connected; then
+    external_ip=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo "")
+    mullvad_ip=$(mullvad status 2>/dev/null | grep -oP 'IPv4: \K[0-9.]+' || echo "")
+    if [[ -n "$external_ip" && -n "$mullvad_ip" && "$external_ip" != "$mullvad_ip" ]]; then
+      warn "IP LEAK DETECTED: external=$external_ip, expected Mullvad=$mullvad_ip"
+      issues=$((issues + 1))
+      notify-send -u critical "VPN Monitor" "IP leak detected! $external_ip" 2>/dev/null || true
+    fi
   fi
 fi
 
