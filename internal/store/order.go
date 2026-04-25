@@ -335,6 +335,47 @@ func (db *DB) fetchOrderLines(ctx context.Context, orderID int64) ([]model.Order
 	return lines, rows.Err()
 }
 
+// FetchOrdersByDateRange returns orders whose created_at falls in
+// [start, end) (UTC), ordered by created_at ascending. Used by the
+// daily order-intake report — line items are not fetched since the
+// report only needs order-level fields.
+func (db *DB) FetchOrdersByDateRange(ctx context.Context, start, end time.Time) ([]model.Order, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, shopify_order_id, order_number, status, customer_account,
+			ship_first_name, ship_last_name, ship_address1, ship_address2,
+			ship_city, ship_province, ship_postcode, ship_country,
+			ship_phone, ship_email,
+			payment_reference, payment_amount, shipping_amount,
+			raw_payload, syspro_order_number, attempts, last_error,
+			order_date, created_at, updated_at,
+			fulfilled_at, shopify_fulfillment_id
+		FROM orders
+		WHERE created_at >= $1 AND created_at < $2
+		ORDER BY created_at ASC`, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("querying orders by date range: %w", err)
+	}
+	defer rows.Close()
+	var orders []model.Order
+	for rows.Next() {
+		var o model.Order
+		if err := rows.Scan(
+			&o.ID, &o.ShopifyOrderID, &o.OrderNumber, &o.Status, &o.CustomerAccount,
+			&o.ShipFirstName, &o.ShipLastName, &o.ShipAddress1, &o.ShipAddress2,
+			&o.ShipCity, &o.ShipProvince, &o.ShipPostcode, &o.ShipCountry,
+			&o.ShipPhone, &o.ShipEmail,
+			&o.PaymentReference, &o.PaymentAmount, &o.ShippingAmount,
+			&o.RawPayload, &o.SysproOrderNumber, &o.Attempts, &o.LastError,
+			&o.OrderDate, &o.CreatedAt, &o.UpdatedAt,
+			&o.FulfilledAt, &o.ShopifyFulfilmentID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning order row: %w", err)
+		}
+		orders = append(orders, o)
+	}
+	return orders, rows.Err()
+}
+
 // UpdateOrderStatus sets the status, attempts count, and last error for an order.
 func (db *DB) UpdateOrderStatus(ctx context.Context, orderID int64, status model.OrderStatus, attempts int, lastError string) error {
 	tag, err := db.Pool.Exec(ctx,
