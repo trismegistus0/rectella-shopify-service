@@ -37,7 +37,7 @@ func writeDeadLetter(dir, kind string, date time.Time, csv []byte) (string, erro
 		path = filepath.Join(dir, fmt.Sprintf("%s-%s-%s.csv",
 			datePart, kind, time.Now().Format("150405")))
 	}
-	if err := os.WriteFile(path, csv, 0o640); err != nil {
+	if err := os.WriteFile(path, csv, 0o600); err != nil {
 		return "", fmt.Errorf("writing dead-letter: %w", err)
 	}
 	return path, nil
@@ -99,7 +99,7 @@ func archiveSentCSV(dir, kind string, date time.Time, csv []byte) (string, error
 		return "", fmt.Errorf("mkdir archive dir: %w", err)
 	}
 	path := filepath.Join(dir, fmt.Sprintf("%s-%s.csv", date.Format("2006-01-02"), kind))
-	if err := os.WriteFile(path, csv, 0o640); err != nil {
+	if err := os.WriteFile(path, csv, 0o600); err != nil {
 		return "", fmt.Errorf("writing archive: %w", err)
 	}
 	return path, nil
@@ -115,7 +115,7 @@ func archiveSentCSVRange(dir, kind string, start, end time.Time, csv []byte) (st
 	}
 	endLabel := end.AddDate(0, 0, -1).Format("2006-01-02")
 	path := filepath.Join(dir, fmt.Sprintf("%s-to-%s-%s.csv", start.Format("2006-01-02"), endLabel, kind))
-	if err := os.WriteFile(path, csv, 0o640); err != nil {
+	if err := os.WriteFile(path, csv, 0o600); err != nil {
 		return "", fmt.Errorf("writing archive: %w", err)
 	}
 	return path, nil
@@ -131,7 +131,8 @@ func readLastSent(dir, kind string) time.Time {
 		return time.Time{}
 	}
 	path := filepath.Join(dir, fmt.Sprintf("last-send-%s.date", kind))
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 — path constructed from operator-controlled dir + fixed kind suffix
+
 	if err != nil {
 		return time.Time{}
 	}
@@ -150,7 +151,7 @@ func writeLastSent(dir, kind string, date time.Time) error {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 	path := filepath.Join(dir, fmt.Sprintf("last-send-%s.date", kind))
-	return os.WriteFile(path, []byte(date.UTC().Format("2006-01-02")+"\n"), 0o640)
+	return os.WriteFile(path, []byte(date.UTC().Format("2006-01-02")+"\n"), 0o600)
 }
 
 // noopJSONStub keeps `encoding/json` referenced if no other helper in

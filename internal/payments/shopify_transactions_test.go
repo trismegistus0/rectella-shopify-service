@@ -19,14 +19,9 @@ func newTestFetcher(srv *httptest.Server) *TransactionsFetcher {
 	return f
 }
 
-// graphqlMock spins up an httptest.Server that responds to
+// newGraphQLMock spins up an httptest.Server that responds to
 // POST /graphql.json with the supplied transactions slice. Asserts
-// the access-token header. Errors are returned via the responseBuilder.
-type graphqlMock struct {
-	t       *testing.T
-	respond func(*testing.T, http.ResponseWriter, *http.Request)
-}
-
+// the access-token header.
 func newGraphQLMock(t *testing.T, txns []graphqlTransaction) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

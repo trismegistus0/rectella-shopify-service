@@ -23,7 +23,7 @@ func TestWriteDeadLetter_HappyPath(t *testing.T) {
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(path) // #nosec G304 — test reads a path it just wrote into a t.TempDir
 	if err != nil {
 		t.Fatalf("read written file: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestArchiveSentCSV_Writes(t *testing.T) {
 	if !strings.HasSuffix(path, "2026-04-24-cash.csv") {
 		t.Errorf("unexpected path: %q", path)
 	}
-	body, _ := os.ReadFile(path)
+	body, _ := os.ReadFile(path) // #nosec G304 — test reads a path it just wrote into a t.TempDir
 	if string(body) != "hello" {
 		t.Errorf("body wrong: %q", body)
 	}
