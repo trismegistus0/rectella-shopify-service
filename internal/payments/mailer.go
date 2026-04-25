@@ -66,6 +66,35 @@ func NewMailer(cfg MailerConfig) *Mailer {
 	}
 }
 
+// Verify performs a token-acquisition handshake against the Microsoft
+// identity platform. Returns nil if we can roundtrip a bearer token
+// with the configured tenant/client/secret. Used at service startup
+// as a fast pre-flight — the call site `slog.Warn`s on failure but
+// does NOT abort the scheduler.
+//
+// We deliberately do NOT poke a Graph API endpoint here. The app
+// registration only carries `Mail.Send` (application) permission,
+// scoped via ApplicationAccessPolicy to one mailbox; calling any
+// read endpoint (e.g. `GET /users/{id}`) would 403 with
+// `Authorization_RequestDenied` even when production sends work
+// perfectly. Token acquisition is what `Mail.Send` consent actually
+// gates — if it succeeds, we know the secret is current and the
+// app is consented. ApplicationAccessPolicy is enforced at send
+// time and can't be pre-flighted under our scope.
+//
+// Caveats: a successful Verify at boot does NOT guarantee a successful
+// send 1h+ later (tokens expire, the secret could be revoked
+// mid-day). The live send path is still the source of truth.
+func (m *Mailer) Verify(ctx context.Context) error {
+	if m.cfg.TenantID == "" || m.cfg.ClientID == "" || m.cfg.ClientSecret == "" || m.cfg.SenderMailbox == "" {
+		return errors.New("mailer: incomplete Graph config")
+	}
+	if _, err := m.getToken(ctx, true); err != nil {
+		return fmt.Errorf("acquiring token: %w", err)
+	}
+	return nil
+}
+
 // Attachment is a single file attached to an email.
 type Attachment struct {
 	Filename    string

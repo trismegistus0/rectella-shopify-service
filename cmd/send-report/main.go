@@ -38,15 +38,42 @@ func main() {
 
 func run() error {
 	reportType := flag.String("type", "", "cash | intake (required)")
-	dateStr := flag.String("date", "", "YYYY-MM-DD; default = yesterday UTC")
+	dateStr := flag.String("date", "", "YYYY-MM-DD; default = yesterday UTC. Mutually exclusive with --from/--to.")
+	fromStr := flag.String("from", "", "YYYY-MM-DD; backfill range start (inclusive). Pairs with --to.")
+	toStr := flag.String("to", "", "YYYY-MM-DD; backfill range end (inclusive). Pairs with --from.")
 	flag.Parse()
 
 	if *reportType != "cash" && *reportType != "intake" {
 		return errors.New("--type must be 'cash' or 'intake'")
 	}
+	if (*fromStr != "") != (*toStr != "") {
+		return errors.New("--from and --to must be set together")
+	}
+	rangeMode := *fromStr != ""
+	if rangeMode && *dateStr != "" {
+		return errors.New("--date is mutually exclusive with --from/--to")
+	}
+	if rangeMode && *reportType != "cash" {
+		return errors.New("--from/--to range mode only supports --type=cash today")
+	}
 
-	var date time.Time
-	if *dateStr == "" {
+	var date, rangeStart, rangeEnd time.Time
+	if rangeMode {
+		s, err := time.Parse("2006-01-02", *fromStr)
+		if err != nil {
+			return fmt.Errorf("invalid --from %q: %w", *fromStr, err)
+		}
+		e, err := time.Parse("2006-01-02", *toStr)
+		if err != nil {
+			return fmt.Errorf("invalid --to %q: %w", *toStr, err)
+		}
+		// Range is half-open [start, end+1day) so the last day is included.
+		rangeStart = s
+		rangeEnd = e.AddDate(0, 0, 1)
+		if !rangeStart.Before(rangeEnd) {
+			return fmt.Errorf("--from must be on or before --to")
+		}
+	} else if *dateStr == "" {
 		date = time.Now().UTC().AddDate(0, 0, -1)
 	} else {
 		d, err := time.Parse("2006-01-02", *dateStr)
@@ -86,15 +113,31 @@ func run() error {
 		}
 		fetcher := payments.NewTransactionsFetcher(cfg.ShopifyStoreURL, cfg.ShopifyAccessToken, logger)
 		reporter, err := payments.NewDailyReporter(payments.DailyReporterConfig{
-			Source:     fetcher,
-			Mailer:     mailer,
-			Recipients: cfg.CreditControlTo,
-			StoreName:  cfg.ShopifyStoreURL,
-			Hour:       cfg.DailyReportHour,
-			Logger:     logger,
+			Source:        fetcher,
+			Mailer:        mailer,
+			Recipients:    cfg.CreditControlTo,
+			StoreName:     cfg.ShopifyStoreURL,
+			Hour:          cfg.DailyReportHour,
+			Logger:        logger,
+			DeadLetterDir: cfg.DeadLetterDir,
+			ArchiveDir:    cfg.SentReportArchiveDir,
+			NtfyTopic:     cfg.NtfyTopic,
+			// Healthcheck + StateDir intentionally omitted — operator
+			// runs are out-of-band, shouldn't trigger the daily heartbeat
+			// or update the persistent last-sent state.
 		})
 		if err != nil {
 			return fmt.Errorf("cash reporter init: %w", err)
+		}
+		if rangeMode {
+			if err := reporter.SendForRange(ctx, rangeStart, rangeEnd); err != nil {
+				return fmt.Errorf("cash range report send: %w", err)
+			}
+			fmt.Printf("OK — cash-receipt range report sent for %s to %s to %v\n",
+				rangeStart.Format("2006-01-02"),
+				rangeEnd.AddDate(0, 0, -1).Format("2006-01-02"),
+				cfg.CreditControlTo)
+			return nil
 		}
 		if err := reporter.SendForDate(ctx, date); err != nil {
 			return fmt.Errorf("cash report send: %w", err)
@@ -114,12 +157,15 @@ func run() error {
 		defer pool.Close()
 		db := &store.DB{Pool: pool}
 		intake, err := payments.NewIntakeReporter(payments.IntakeReporterConfig{
-			Source:     db,
-			Mailer:     mailer,
-			Recipients: cfg.OrderIntakeTo,
-			StoreName:  cfg.ShopifyStoreURL,
-			Hour:       cfg.OrderIntakeHour,
-			Logger:     logger,
+			Source:        db,
+			Mailer:        mailer,
+			Recipients:    cfg.OrderIntakeTo,
+			StoreName:     cfg.ShopifyStoreURL,
+			Hour:          cfg.OrderIntakeHour,
+			Logger:        logger,
+			DeadLetterDir: cfg.DeadLetterDir,
+			ArchiveDir:    cfg.SentReportArchiveDir,
+			NtfyTopic:     cfg.NtfyTopic,
 		})
 		if err != nil {
 			return fmt.Errorf("intake reporter init: %w", err)

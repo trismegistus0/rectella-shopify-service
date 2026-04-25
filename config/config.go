@@ -77,6 +77,16 @@ type Config struct {
 	OrderIntakeTo      []string
 	DailyReportHour    int // UTC, default 1 (= 01:00 GMT / 02:00 BST — Sarah's spec for cash receipts)
 	OrderIntakeHour    int // UTC, default 6 (= 07:00 BST / 06:00 GMT — per the Asana ticket)
+
+	// Daily-report resilience layer. Optional — features degrade
+	// gracefully when their env vars are unset. See docs/handover.md
+	// §8 for the operator's view.
+	HealthchecksCashURL   string // GET success ping after each cash-receipt send
+	HealthchecksIntakeURL string // GET success ping after each intake send
+	DeadLetterDir         string // dir for un-sent CSVs (default ~/backups/rectella/missed-reports)
+	SentReportArchiveDir  string // dir for archived successful sends (default ~/backups/rectella/sent-reports)
+	ReportStateDir        string // dir for last-send timestamps to support idempotency (default ~/backups/rectella/state)
+	NtfyTopic             string // ntfy push topic for dead-letter alerts
 }
 
 func Load() (*Config, error) {
@@ -252,6 +262,25 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid ORDER_INTAKE_HOUR: %q", h)
 		}
 		c.OrderIntakeHour = n
+	}
+
+	// Resilience layer — all optional with sensible defaults.
+	c.HealthchecksCashURL = os.Getenv("HEALTHCHECKS_CASH_URL")
+	c.HealthchecksIntakeURL = os.Getenv("HEALTHCHECKS_INTAKE_URL")
+	c.NtfyTopic = os.Getenv("NTFY_TOPIC")
+	home, _ := os.UserHomeDir()
+	defaultRoot := home + "/backups/rectella"
+	c.DeadLetterDir = os.Getenv("DEAD_LETTER_DIR")
+	if c.DeadLetterDir == "" {
+		c.DeadLetterDir = defaultRoot + "/missed-reports"
+	}
+	c.SentReportArchiveDir = os.Getenv("SENT_REPORT_ARCHIVE_DIR")
+	if c.SentReportArchiveDir == "" {
+		c.SentReportArchiveDir = defaultRoot + "/sent-reports"
+	}
+	c.ReportStateDir = os.Getenv("REPORT_STATE_DIR")
+	if c.ReportStateDir == "" {
+		c.ReportStateDir = defaultRoot + "/state"
 	}
 
 	c.LogLevel, err = parseLogLevel(os.Getenv("LOG_LEVEL"))

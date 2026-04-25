@@ -186,3 +186,63 @@ func TestIntake_Validation(t *testing.T) {
 		t.Error("want error for hour out of range")
 	}
 }
+
+func TestValidateIntakeAnomalies_BusinessDayZero(t *testing.T) {
+	monday := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC) // Monday
+	got := ValidateIntakeAnomalies(nil, monday)
+	if len(got) != 1 || !strings.Contains(got[0], "Zero orders") {
+		t.Errorf("Mon zero-orders should flag, got %+v", got)
+	}
+}
+
+func TestValidateIntakeAnomalies_WeekendZero(t *testing.T) {
+	saturday := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	if got := ValidateIntakeAnomalies(nil, saturday); len(got) != 0 {
+		t.Errorf("Sat zero-orders should NOT flag, got %+v", got)
+	}
+}
+
+func TestValidateIntakeAnomalies_AllZeroPayment(t *testing.T) {
+	monday := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	orders := []model.Order{
+		{OrderNumber: "#A", Status: model.OrderStatusFulfilled, PaymentAmount: 0, SysproOrderNumber: "1"},
+		{OrderNumber: "#B", Status: model.OrderStatusFulfilled, PaymentAmount: 0, SysproOrderNumber: "2"},
+	}
+	got := ValidateIntakeAnomalies(orders, monday)
+	if len(got) != 1 || !strings.Contains(got[0], "every payment_amount is zero") {
+		t.Errorf("expected zero-payment anomaly, got %+v", got)
+	}
+}
+
+func TestValidateIntakeAnomalies_NormalDay(t *testing.T) {
+	monday := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	orders := []model.Order{
+		{Status: model.OrderStatusFulfilled, PaymentAmount: 25, SysproOrderNumber: "1"},
+		{Status: model.OrderStatusSubmitted, PaymentAmount: 50, SysproOrderNumber: "2"},
+	}
+	if got := ValidateIntakeAnomalies(orders, monday); len(got) != 0 {
+		t.Errorf("normal day flagged: %+v", got)
+	}
+}
+
+func TestValidateIntakeAnomalies_AllStuckSubmitted(t *testing.T) {
+	monday := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	orders := []model.Order{
+		{OrderNumber: "#A", Status: model.OrderStatusSubmitted, PaymentAmount: 25, SysproOrderNumber: ""},
+		{OrderNumber: "#B", Status: model.OrderStatusSubmitted, PaymentAmount: 50, SysproOrderNumber: ""},
+	}
+	got := ValidateIntakeAnomalies(orders, monday)
+	if len(got) == 0 {
+		t.Fatalf("expected stuck-submitted anomaly")
+	}
+	found := false
+	for _, a := range got {
+		if strings.Contains(a, "BBQ1026 fingerprint") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected BBQ1026 fingerprint mention, got %+v", got)
+	}
+}

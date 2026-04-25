@@ -231,16 +231,50 @@ func run() error {
 			SenderMailbox: cfg.GraphSenderMailbox,
 		})
 
+		// Boot-time Graph sanity check — fails LOUD here so a wrong
+		// secret / revoked policy / typo in the mailbox is visible at
+		// startup instead of at 06:00 the next morning. Does NOT abort
+		// the scheduler — tokens expire after 1h and a successful boot
+		// check doesn't guarantee a successful 06:00 send anyway. The
+		// scheduler's own send path is the source of truth for live
+		// auth state.
+		go func() {
+			verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if err := mailer.Verify(verifyCtx); err != nil {
+				slog.Warn("Graph mailer verification failed at boot — daily reports may not send",
+					"mailbox", cfg.GraphSenderMailbox, "error", err)
+			} else {
+				slog.Info("Graph mailer verified at boot", "mailbox", cfg.GraphSenderMailbox)
+			}
+		}()
+
+		// Pre-create resilience-layer dirs so the first failure on a
+		// fresh box doesn't have to allocate them. Best-effort — actual
+		// writes will mkdir again as a guard.
+		for _, d := range []string{cfg.DeadLetterDir, cfg.SentReportArchiveDir, cfg.ReportStateDir} {
+			if d != "" {
+				if err := os.MkdirAll(d, 0o750); err != nil {
+					slog.Warn("could not pre-create resilience dir", "dir", d, "error", err)
+				}
+			}
+		}
+
 		// Cash-receipt report (needs Shopify API access for transactions).
 		if len(cfg.CreditControlTo) > 0 && cfg.ShopifyAccessToken != "" {
 			fetcher := payments.NewTransactionsFetcher(cfg.ShopifyStoreURL, cfg.ShopifyAccessToken, logger)
 			reporter, err := payments.NewDailyReporter(payments.DailyReporterConfig{
-				Source:     fetcher,
-				Mailer:     mailer,
-				Recipients: cfg.CreditControlTo,
-				StoreName:  cfg.ShopifyStoreURL,
-				Hour:       cfg.DailyReportHour,
-				Logger:     logger,
+				Source:         fetcher,
+				Mailer:         mailer,
+				Recipients:     cfg.CreditControlTo,
+				StoreName:      cfg.ShopifyStoreURL,
+				Hour:           cfg.DailyReportHour,
+				Logger:         logger,
+				HealthcheckURL: cfg.HealthchecksCashURL,
+				DeadLetterDir:  cfg.DeadLetterDir,
+				ArchiveDir:     cfg.SentReportArchiveDir,
+				StateDir:       cfg.ReportStateDir,
+				NtfyTopic:      cfg.NtfyTopic,
 			})
 			if err != nil {
 				slog.Warn("daily cash-receipt report disabled", "error", err)
@@ -260,12 +294,17 @@ func run() error {
 		// Order-intake report (pulls yesterday's orders from Postgres).
 		if len(cfg.OrderIntakeTo) > 0 {
 			intake, err := payments.NewIntakeReporter(payments.IntakeReporterConfig{
-				Source:     db,
-				Mailer:     mailer,
-				Recipients: cfg.OrderIntakeTo,
-				StoreName:  cfg.ShopifyStoreURL,
-				Hour:       cfg.OrderIntakeHour,
-				Logger:     logger,
+				Source:         db,
+				Mailer:         mailer,
+				Recipients:     cfg.OrderIntakeTo,
+				StoreName:      cfg.ShopifyStoreURL,
+				Hour:           cfg.OrderIntakeHour,
+				Logger:         logger,
+				HealthcheckURL: cfg.HealthchecksIntakeURL,
+				DeadLetterDir:  cfg.DeadLetterDir,
+				ArchiveDir:     cfg.SentReportArchiveDir,
+				StateDir:       cfg.ReportStateDir,
+				NtfyTopic:      cfg.NtfyTopic,
 			})
 			if err != nil {
 				slog.Warn("order-intake report disabled", "error", err)
