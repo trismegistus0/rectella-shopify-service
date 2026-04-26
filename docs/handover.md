@@ -332,6 +332,18 @@ The daily-report subsystem has four independent failure-detection layers, delibe
 
 Plus a **sent-CSV archive** (`~/backups/rectella/sent-reports/`) on every successful send — audit trail independent of the recipient's mailbox. If anyone in credit control deletes an email, finance can still reconcile against the original artifact.
 
+### 8.2 Order-pipeline + stock-sync event push (lightweight observability)
+
+Two more ntfy events fire as low-priority background pushes (not pager wake-ups) so the operator can see operational issues *the moment they happen* rather than wait for the next 06:00 intake email:
+
+- **Order rejected by SYSPRO** (status → `failed`) — body names the order number, the SYSPRO reason, and the retry endpoint. Typical cause: bad SKU, missing customer, malformed address.
+- **Order dead-lettered** (status → `dead_letter` after 3 consecutive infra failures) — body names the order number, attempt count, last error, and the retry endpoint. Typical cause: VPN/SYSPRO down for the whole batch window.
+- **Orphan SKUs found in stock sync** — Shopify SKUs with no matching record in the SYSPRO `WEBS` warehouse. Body names the count and a sample of up to 5 codes. Rate-limited to one push per hour and only when the orphan set changes, so a persistent unmatched SKU doesn't pager-flood.
+
+All three reuse `NTFY_TOPIC` and are gated on it — empty topic = silent fall-back to journal-only logging (no behaviour change vs the original Phase 1 build).
+
+These events are **observability, not full hardening** — they let the operator (Sebastian during the 4-week post-handoff care window; NCS thereafter) see when something's drifting without yet committing to an automated retry/recovery path. If events fire often enough to suggest a systemic issue, the right response is targeted code hardening — not muting the events.
+
 The full per-incident triage steps (commands to run, what to look for in logs, who to escalate to) live in the runbook.
 
 ---

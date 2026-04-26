@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -45,9 +46,16 @@ type Syncer struct {
 	logger    *slog.Logger
 
 	syncMu              sync.Mutex // single-flight guard
-	mu                  sync.Mutex // protects cachedStock + consecutiveFailures
+	mu                  sync.Mutex // protects cachedStock + consecutiveFailures + orphan dedupe
 	cachedStock         map[string]float64
 	consecutiveFailures int
+
+	// Orphan-SKU dedupe: only fire ntfy when the orphan set changes,
+	// and at most once per hour, so a persistent unmatched SKU
+	// doesn't pager-flood the operator at every 15-min cycle.
+	ntfyTopic            string
+	lastOrphanSet        map[string]struct{}
+	lastOrphanNotifiedAt time.Time
 }
 
 // NewSyncer constructs a stock syncer. When lister is non-nil the syncer
@@ -76,6 +84,16 @@ func NewSyncer(
 		triggerCh: triggerCh,
 		logger:    logger,
 	}
+}
+
+// SetNtfyTopic enables fire-and-forget ntfy events when the stock sync
+// finds Shopify SKUs that don't exist in the SYSPRO WEBS warehouse
+// (orphan SKUs — typically a new product Clare added on Shopify
+// without a matching SYSPRO record). Empty topic = no events (default).
+func (s *Syncer) SetNtfyTopic(topic string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ntfyTopic = topic
 }
 
 // Run starts the polling loop. Blocks until ctx is cancelled.
@@ -212,6 +230,91 @@ func (s *Syncer) fullSync(ctx context.Context) {
 		"skus_skipped", len(skus)-len(quantities),
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
+
+	s.notifyOrphanSKUsIfChanged(skus, stock)
+}
+
+// notifyOrphanSKUsIfChanged compares the Shopify-known SKU list against
+// the SYSPRO INVQRY response and fires a low-priority ntfy event when
+// orphans appear (Shopify-known but SYSPRO-unknown). Dedupes against
+// the previously-fired set and rate-limits to at most one push per
+// hour so a persistent orphan doesn't pager-flood at 15-min cycles.
+//
+// Best-effort observability — operator surfaces the gap during the
+// post-handoff care window and adds the missing stock code in SYSPRO
+// (or removes/draft-flags the product in Shopify).
+func (s *Syncer) notifyOrphanSKUsIfChanged(skus []string, stock map[string]float64) {
+	if len(skus) == 0 || len(stock) == len(skus) {
+		return
+	}
+	orphans := make([]string, 0)
+	orphanSet := make(map[string]struct{})
+	for _, sku := range skus {
+		if sku == "" {
+			continue
+		}
+		if _, ok := stock[sku]; !ok {
+			orphans = append(orphans, sku)
+			orphanSet[sku] = struct{}{}
+		}
+	}
+	if len(orphans) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	topic := s.ntfyTopic
+	prev := s.lastOrphanSet
+	last := s.lastOrphanNotifiedAt
+	changed := !sameStringSet(prev, orphanSet)
+	rateLimitElapsed := time.Since(last) > time.Hour
+	if changed || rateLimitElapsed {
+		s.lastOrphanSet = orphanSet
+		s.lastOrphanNotifiedAt = time.Now()
+	}
+	s.mu.Unlock()
+
+	if !changed && !rateLimitElapsed {
+		return
+	}
+
+	sample := orphans
+	if len(sample) > 5 {
+		sample = sample[:5]
+	}
+	body := "Stock sync found Shopify SKUs with no matching record in SYSPRO " + s.warehouse + ":\n" +
+		"  count: " + itoa(len(orphans)) + "\n" +
+		"  sample: " + joinComma(sample) + "\n\n" +
+		"These will appear as 'Sold out' on the storefront until added to SYSPRO."
+	pingNtfyEvent(topic, "Rectella stock sync: orphan SKUs", body)
+}
+
+func sameStringSet(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func itoa(i int) string {
+	// avoids importing strconv just for this — keeps the helper self-contained
+	return fmt.Sprintf("%d", i)
+}
+
+func joinComma(s []string) string {
+	out := ""
+	for i, v := range s {
+		if i > 0 {
+			out += ", "
+		}
+		out += v
+	}
+	return out
 }
 
 func (s *Syncer) triggeredSync(ctx context.Context) {
