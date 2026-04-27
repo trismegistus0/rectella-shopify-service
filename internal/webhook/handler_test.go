@@ -276,6 +276,91 @@ func TestHandleOrderCreate(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			// Regression guard for the BBQ1025 over-billing bug
+			// (2026-04-27). Shopify applies order-level percentage
+			// discount codes via discount_allocations[] on each line,
+			// while leaving total_discount=0. Before the fix the
+			// service ignored the allocation and posted the
+			// pre-discount price to SYSPRO, over-charging the
+			// customer by discount + 20% VAT. Real customer payload
+			// from order BBQ1025 (10% off via "bbq40").
+			name: "order with order-level discount code (discount_allocations)",
+			body: `{
+				"id": 5551234567899,
+				"name": "#BBQ1025-test",
+				"email": "test@example.com",
+				"created_at": "2026-04-17T19:32:39+01:00",
+				"total_price": "44.10",
+				"financial_status": "paid",
+				"gateway": "paypal",
+				"line_items": [
+					{
+						"sku": "IBBQ2093",
+						"quantity": 1,
+						"price": "49.00",
+						"total_discount": "0.00",
+						"tax_lines": [{"price": "7.35", "rate": 0.2, "title": "GB VAT"}],
+						"discount_allocations": [{"amount": "4.90"}]
+					}
+				]
+			}`,
+			webhookID:      "wh-discount-alloc",
+			signBody:       true,
+			store:          &mockStore{},
+			wantStatus:     http.StatusOK,
+			wantCreateCall: true,
+			checkOrder: func(t *testing.T, order model.Order, lines []model.OrderLine) {
+				if len(lines) != 1 {
+					t.Fatalf("expected 1 line, got %d", len(lines))
+				}
+				if lines[0].Discount != 4.90 {
+					t.Errorf("Discount = %f, want 4.90 (from discount_allocations)", lines[0].Discount)
+				}
+				if lines[0].UnitPrice != 49.00 {
+					t.Errorf("UnitPrice = %f, want 49.00 (pre-discount gross)", lines[0].UnitPrice)
+				}
+			},
+		},
+		{
+			// total_discount AND discount_allocations both populated
+			// (legitimate case: line-level edit + order-level code).
+			// Both must be summed.
+			name: "order with both total_discount and discount_allocations",
+			body: `{
+				"id": 5551234567900,
+				"name": "#BBQ1025-test2",
+				"email": "test@example.com",
+				"created_at": "2026-04-17T19:32:39+01:00",
+				"total_price": "10.00",
+				"financial_status": "paid",
+				"gateway": "shopify_payments",
+				"line_items": [
+					{
+						"sku": "IBBQ2093",
+						"quantity": 1,
+						"price": "20.00",
+						"total_discount": "3.00",
+						"tax_lines": [{"price": "1.00", "rate": 0.2, "title": "GB VAT"}],
+						"discount_allocations": [{"amount": "5.00"}, {"amount": "2.00"}]
+					}
+				]
+			}`,
+			webhookID:      "wh-discount-mixed",
+			signBody:       true,
+			store:          &mockStore{},
+			wantStatus:     http.StatusOK,
+			wantCreateCall: true,
+			checkOrder: func(t *testing.T, order model.Order, lines []model.OrderLine) {
+				if len(lines) != 1 {
+					t.Fatalf("expected 1 line, got %d", len(lines))
+				}
+				// 3.00 (total_discount) + 5.00 + 2.00 (allocations) = 10.00
+				if lines[0].Discount != 10.00 {
+					t.Errorf("Discount = %f, want 10.00 (sum of total_discount + all allocations)", lines[0].Discount)
+				}
+			},
+		},
+		{
 			name: "order with shipping lines",
 			body: `{
 				"id": 5551234567891,

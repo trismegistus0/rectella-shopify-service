@@ -205,7 +205,7 @@ func (s *Sweeper) listOrders(ctx context.Context, since time.Time) ([]shopifyOrd
 	q.Set("status", "any")
 	q.Set("created_at_min", since.Format(time.RFC3339))
 	q.Set("limit", "250")
-	q.Set("fields", "id,name,email,created_at,total_price,financial_status,taxes_included,shipping_address,line_items,shipping_lines,gateway,payment_gateway_names")
+	q.Set("fields", "id,name,email,created_at,total_price,financial_status,taxes_included,shipping_address,line_items,shipping_lines,gateway,payment_gateway_names,discount_codes,discount_applications")
 
 	reqURL := s.resolveBaseURL() + "/orders.json?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -300,11 +300,20 @@ type shopifyAddress struct {
 }
 
 type shopifyLineItem struct {
-	SKU           string       `json:"sku"`
-	Quantity      int          `json:"quantity"`
-	Price         string       `json:"price"`
-	TotalDiscount string       `json:"total_discount"`
-	TaxLines      []shopifyTax `json:"tax_lines"`
+	SKU                 string                      `json:"sku"`
+	Quantity            int                         `json:"quantity"`
+	Price               string                      `json:"price"`
+	TotalDiscount       string                      `json:"total_discount"`
+	TaxLines            []shopifyTax                `json:"tax_lines"`
+	DiscountAllocations []shopifyDiscountAllocation `json:"discount_allocations"`
+}
+
+// shopifyDiscountAllocation is the per-line cut of an order-level
+// discount code. See internal/webhook/payload.go for the full
+// rationale; the duplicated DTO here exists because the reconcile
+// path re-marshals into raw_payload independently of the webhook.
+type shopifyDiscountAllocation struct {
+	Amount string `json:"amount"`
 }
 
 type shopifyTax struct {
@@ -373,6 +382,14 @@ func (so shopifyOrder) toDomain() (model.Order, []model.OrderLine) {
 		}
 		if v, err := strconv.ParseFloat(li.TotalDiscount, 64); err == nil {
 			line.Discount = v
+		}
+		// Sum order-level discount-code allocations alongside any
+		// line-level total_discount. Mirrors the webhook handler;
+		// see internal/webhook/handler.go for full rationale.
+		for _, da := range li.DiscountAllocations {
+			if v, err := strconv.ParseFloat(da.Amount, 64); err == nil {
+				line.Discount += v
+			}
 		}
 		for _, t := range li.TaxLines {
 			if v, err := strconv.ParseFloat(t.Price, 64); err == nil {
