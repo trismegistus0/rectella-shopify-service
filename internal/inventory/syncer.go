@@ -51,7 +51,7 @@ type Syncer struct {
 	consecutiveFailures int
 
 	// Orphan-SKU dedupe: only fire ntfy when the orphan set changes,
-	// and at most once per hour, so a persistent unmatched SKU
+	// and at most once per 24h, so a persistent unmatched SKU
 	// doesn't pager-flood the operator at every 15-min cycle.
 	ntfyTopic            string
 	lastOrphanSet        map[string]struct{}
@@ -238,7 +238,7 @@ func (s *Syncer) fullSync(ctx context.Context) {
 // the SYSPRO INVQRY response and fires a low-priority ntfy event when
 // orphans appear (Shopify-known but SYSPRO-unknown). Dedupes against
 // the previously-fired set and rate-limits to at most one push per
-// hour so a persistent orphan doesn't pager-flood at 15-min cycles.
+// 24h so a persistent orphan doesn't pager-flood at 15-min cycles.
 //
 // Best-effort observability — operator surfaces the gap during the
 // post-handoff care window and adds the missing stock code in SYSPRO
@@ -267,7 +267,7 @@ func (s *Syncer) notifyOrphanSKUsIfChanged(skus []string, stock map[string]float
 	prev := s.lastOrphanSet
 	last := s.lastOrphanNotifiedAt
 	changed := !sameStringSet(prev, orphanSet)
-	rateLimitElapsed := time.Since(last) > time.Hour
+	rateLimitElapsed := time.Since(last) > 24*time.Hour
 	if changed || rateLimitElapsed {
 		s.lastOrphanSet = orphanSet
 		s.lastOrphanNotifiedAt = time.Now()
