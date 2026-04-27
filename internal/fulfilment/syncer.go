@@ -218,10 +218,7 @@ func isShopifyAPIError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "no open fulfillment orders found") {
-		return false
-	}
-	return true
+	return !strings.Contains(msg, "no open fulfillment orders found")
 }
 
 // handleAPIErrorEscalation tracks consecutive cycles that hit Shopify
