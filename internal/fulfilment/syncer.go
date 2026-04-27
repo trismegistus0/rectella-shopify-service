@@ -2,7 +2,9 @@ package fulfilment
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +37,28 @@ type FulfilmentSyncer struct {
 	interval time.Duration
 	logger   *slog.Logger
 	syncMu   sync.Mutex // single-flight guard
+
+	// Shopify-API-error escalation: count consecutive cycles that hit
+	// API-level errors (e.g. "Access denied for fulfillmentOrders field"
+	// from a missing scope), and rate-limit the ntfy ping so a sustained
+	// outage doesn't pager-flood.
+	mu                       sync.Mutex
+	ntfyTopic                string
+	consecutiveFailureCycles int
+	lastShopifyErrorMessage  string
+	lastNotifiedAt           time.Time
+}
+
+// SetNtfyTopic enables fire-and-forget ntfy events when the fulfilment
+// write-back to Shopify hits an API-level error (graphql errors,
+// network failures, scope revocation). Per-order benign errors like
+// "no open fulfillment orders found" do NOT trigger pings — only
+// errors that could leave the entire write-back blocked. Empty topic
+// = no events (default).
+func (s *FulfilmentSyncer) SetNtfyTopic(topic string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ntfyTopic = topic
 }
 
 // NewFulfilmentSyncer creates a new fulfilment syncer.
@@ -115,6 +139,8 @@ func (s *FulfilmentSyncer) processOrders(ctx context.Context) {
 	}
 
 	fulfilled := 0
+	apiErrorCount := 0
+	var lastAPIError string
 	for _, order := range orders {
 		result, ok := dispatched[order.SysproOrderNumber]
 		if !ok {
@@ -131,6 +157,10 @@ func (s *FulfilmentSyncer) processOrders(ctx context.Context) {
 				"shopify_order_id", order.ShopifyOrderID,
 				"error", err,
 			)
+			if isShopifyAPIError(err) {
+				apiErrorCount++
+				lastAPIError = err.Error()
+			}
 			continue
 		}
 
@@ -146,6 +176,10 @@ func (s *FulfilmentSyncer) processOrders(ctx context.Context) {
 				"fulfillment_order_id", foID,
 				"error", err,
 			)
+			if isShopifyAPIError(err) {
+				apiErrorCount++
+				lastAPIError = err.Error()
+			}
 			continue
 		}
 
@@ -170,4 +204,66 @@ func (s *FulfilmentSyncer) processOrders(ctx context.Context) {
 		"fulfilled", fulfilled,
 		"submitted", len(orders),
 	)
+
+	s.handleAPIErrorEscalation(apiErrorCount, lastAPIError, len(orders))
+}
+
+// isShopifyAPIError distinguishes systemic Shopify-side failures
+// (graphql errors, network failures, parsing failures, missing scope)
+// from per-order benign conditions like "no open fulfillment orders
+// found for order N", which fires legitimately when an order has
+// already been fulfilled in Shopify and shouldn't page anyone.
+func isShopifyAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "no open fulfillment orders found") {
+		return false
+	}
+	return true
+}
+
+// handleAPIErrorEscalation tracks consecutive cycles that hit Shopify
+// API errors and fires a rate-limited ntfy ping when the failure
+// persists across multiple cycles. Reset on a clean cycle.
+func (s *FulfilmentSyncer) handleAPIErrorEscalation(apiErrorCount int, lastError string, totalOrders int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if apiErrorCount == 0 {
+		s.consecutiveFailureCycles = 0
+		s.lastShopifyErrorMessage = ""
+		return
+	}
+
+	s.consecutiveFailureCycles++
+	s.lastShopifyErrorMessage = lastError
+
+	// Require >= 2 consecutive failed cycles so a one-off blip doesn't
+	// page (a transient 5xx from Shopify resolves itself on the next
+	// 30-min tick). Then rate-limit subsequent pings to once per hour.
+	if s.consecutiveFailureCycles < 2 {
+		return
+	}
+	if !s.lastNotifiedAt.IsZero() && time.Since(s.lastNotifiedAt) < time.Hour {
+		return
+	}
+
+	topic := s.ntfyTopic
+	if topic == "" {
+		return
+	}
+	s.lastNotifiedAt = time.Now()
+
+	body := fmt.Sprintf(
+		"Fulfilment write-back to Shopify is failing.\n"+
+			"  affected this cycle: %d / %d\n"+
+			"  consecutive bad cycles: %d\n"+
+			"  last error: %s\n\n"+
+			"Most likely: missing/expired Shopify access scope or token. "+
+			"Check /admin/oauth/access_scopes.json and rotate the token if needed.",
+		apiErrorCount, totalOrders, s.consecutiveFailureCycles, lastError,
+	)
+	pingNtfyEvent(topic, "Rectella fulfilment write-back blocked", body)
 }

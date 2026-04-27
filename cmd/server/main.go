@@ -379,6 +379,7 @@ func run() error {
 			cfg.FulfilmentSyncInterval,
 			logger,
 		)
+		fulfilmentSyncer.SetNtfyTopic(cfg.NtfyTopic) // shopify-api-error events; empty topic = disabled
 		var fulfilmentCtx context.Context
 		fulfilmentCtx, fulfilmentCancel = context.WithCancel(ctx)
 		defer fulfilmentCancel()

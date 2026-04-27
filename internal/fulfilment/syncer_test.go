@@ -403,3 +403,139 @@ func TestSyncer_MultipleBatches(t *testing.T) {
 		t.Error("order 3 (status 1) should NOT be fulfilled")
 	}
 }
+
+// TestIsShopifyAPIError separates per-order benign conditions from
+// systemic API failures. Per-order "no open fulfillment orders found"
+// must NOT count as an API error (otherwise orders that were already
+// manually fulfilled in Shopify pre-go-live would page the operator
+// every cycle).
+func TestIsShopifyAPIError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"no open fulfillment orders", fmt.Errorf("no open fulfillment orders found for order 1234"), false},
+		{"graphql access denied", fmt.Errorf("querying fulfillment orders: graphql errors: Access denied for fulfillmentOrders field."), true},
+		{"network failure", fmt.Errorf("querying fulfillment orders: dial tcp: connection refused"), true},
+		{"create fulfilment 5xx", fmt.Errorf("graphql errors: 500 internal server error"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isShopifyAPIError(tt.err); got != tt.want {
+				t.Errorf("isShopifyAPIError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleAPIErrorEscalation verifies the rate-limit + consecutive-cycle
+// gate. Single-cycle blip must NOT page; >= 2 consecutive bad cycles must
+// page once; subsequent cycles within the hour must NOT re-page; clean
+// cycle must reset the counter.
+func TestHandleAPIErrorEscalation(t *testing.T) {
+	syncer := NewFulfilmentSyncer(nil, nil, nil, time.Hour, testLogger())
+	syncer.SetNtfyTopic("test-topic")
+
+	// Cycle 1: API error. Must NOT page (need 2 consecutive).
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	if !syncer.lastNotifiedAt.IsZero() {
+		t.Error("first failed cycle should not page")
+	}
+	if syncer.consecutiveFailureCycles != 1 {
+		t.Errorf("expected 1 consecutive failure, got %d", syncer.consecutiveFailureCycles)
+	}
+
+	// Cycle 2: API error again. Must page (>= 2 consecutive).
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	if syncer.lastNotifiedAt.IsZero() {
+		t.Error("second consecutive failed cycle should page")
+	}
+	if syncer.consecutiveFailureCycles != 2 {
+		t.Errorf("expected 2 consecutive failures, got %d", syncer.consecutiveFailureCycles)
+	}
+	firstPing := syncer.lastNotifiedAt
+
+	// Cycle 3: API error within rate-limit window. Must NOT re-page.
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	if !syncer.lastNotifiedAt.Equal(firstPing) {
+		t.Error("third consecutive failed cycle within rate-limit window should NOT re-page")
+	}
+
+	// Cycle 4: Clean cycle. Must reset counter.
+	syncer.handleAPIErrorEscalation(0, "", 50)
+	if syncer.consecutiveFailureCycles != 0 {
+		t.Errorf("clean cycle should reset counter, got %d", syncer.consecutiveFailureCycles)
+	}
+	if syncer.lastShopifyErrorMessage != "" {
+		t.Errorf("clean cycle should clear last error, got %q", syncer.lastShopifyErrorMessage)
+	}
+}
+
+// TestHandleAPIErrorEscalation_RateLimitExpiry verifies that after the
+// 1-hour rate-limit window elapses, a still-failing fulfilment syncer
+// pages again (so a sustained outage isn't permanently muted by the
+// initial ping).
+func TestHandleAPIErrorEscalation_RateLimitExpiry(t *testing.T) {
+	syncer := NewFulfilmentSyncer(nil, nil, nil, time.Hour, testLogger())
+	syncer.SetNtfyTopic("test-topic")
+
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	firstPing := syncer.lastNotifiedAt
+	if firstPing.IsZero() {
+		t.Fatal("expected first ping to fire")
+	}
+
+	// Pretend the last ping happened 90 minutes ago.
+	syncer.mu.Lock()
+	syncer.lastNotifiedAt = time.Now().Add(-90 * time.Minute)
+	syncer.mu.Unlock()
+	prev := syncer.lastNotifiedAt
+
+	// Another bad cycle — past the rate-limit window. Must re-page.
+	syncer.handleAPIErrorEscalation(5, "graphql errors: Access denied", 50)
+	if !syncer.lastNotifiedAt.After(prev) {
+		t.Errorf("after rate-limit expiry, sustained outage should re-page; lastNotifiedAt=%v prev=%v", syncer.lastNotifiedAt, prev)
+	}
+}
+
+// TestProcessOrders_BenignErrorsDontEscalate ensures that "no open
+// fulfillment orders found" errors (the post-fix steady state for
+// Rectella's pre-go-live orders that were already manually fulfilled
+// in Shopify) do NOT trip the API-error counter.
+func TestProcessOrders_BenignErrorsDontEscalate(t *testing.T) {
+	q := &mockDispatchQuerier{
+		results: map[string]syspro.SORQRYResult{
+			"015562": {SalesOrder: "015562", OrderStatus: "9"},
+			"015563": {SalesOrder: "015563", OrderStatus: "9"},
+		},
+	}
+	p := &mockFulfilmentPusher{
+		// No matching foIDs — pusher returns "no fulfillment order for X"
+		// which the production shopify.go phrases as "no open fulfillment
+		// orders found". Patch the mock to mirror that exact substring.
+		foIDs: nil,
+		foErr: fmt.Errorf("no open fulfillment orders found for order 1001"),
+	}
+	store := &mockFulfilmentStore{
+		orders: []model.Order{
+			{ID: 1, ShopifyOrderID: 1001, SysproOrderNumber: "015562", Status: model.OrderStatusSubmitted},
+			{ID: 2, ShopifyOrderID: 1002, SysproOrderNumber: "015563", Status: model.OrderStatusSubmitted},
+		},
+	}
+	syncer := NewFulfilmentSyncer(q, p, store, time.Hour, testLogger())
+	syncer.SetNtfyTopic("test-topic")
+
+	syncer.processOrders(context.Background())
+	syncer.processOrders(context.Background())
+
+	// Despite 4 errors across 2 cycles, none are API-class; counter must stay 0.
+	if syncer.consecutiveFailureCycles != 0 {
+		t.Errorf("benign 'no open fulfillment orders' must NOT increment failure cycles, got %d", syncer.consecutiveFailureCycles)
+	}
+	if !syncer.lastNotifiedAt.IsZero() {
+		t.Error("benign errors must NOT trigger ntfy")
+	}
+}
