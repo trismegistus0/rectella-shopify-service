@@ -186,6 +186,7 @@ func run() error {
 			triggerCh,
 			logger,
 		)
+		syncer.SetNtfyTopic(cfg.NtfyTopic) // orphan-SKU events; empty topic = disabled
 
 		var syncCtx context.Context
 		syncCtx, syncCancel = context.WithCancel(ctx)
@@ -195,6 +196,7 @@ func run() error {
 
 	// Start batch processor.
 	batchProc := batch.New(db, sysproClient, cfg.BatchInterval, logger)
+	batchProc.SetNtfyTopic(cfg.NtfyTopic) // failed/dead_letter events; empty topic = disabled
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	defer batchCancel()
 	go batchProc.Run(batchCtx)
@@ -377,6 +379,7 @@ func run() error {
 			cfg.FulfilmentSyncInterval,
 			logger,
 		)
+		fulfilmentSyncer.SetNtfyTopic(cfg.NtfyTopic) // shopify-api-error events; empty topic = disabled
 		var fulfilmentCtx context.Context
 		fulfilmentCtx, fulfilmentCancel = context.WithCancel(ctx)
 		defer fulfilmentCancel()

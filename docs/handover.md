@@ -2,7 +2,7 @@
 
 **Project:** Shopify ↔ SYSPRO 8 integration for Barbequick (`barbequick.co.uk`)
 **Delivered by:** Ctrl Alt Insight (Sarah Adamo, Sebastian Adamo)
-**For:** Rectella International — Operations (Melanie Higgins, Reece Taylor), Finance (Liz Buckley), and IT (Andrew Wilson, NCS)
+**For:** Rectella International — Operations (Melanie Higgins, Reece Taylor), Finance (Liz Buckley), and IT (Andrew Charlesworth, NCS)
 **Status:** Phase 1 LIVE on bridge infrastructure, processing real customer orders. Phase 2 cloud migration in progress.
 
 ---
@@ -15,9 +15,13 @@ A middleware service that sits between the Barbequick Shopify storefront and SYS
 |---|-------|-----------|---------|-----------------|
 | 1 | **Order entry** | Shopify → SYSPRO | Webhook on customer payment | `SORTOI` |
 | 2 | **Quantity on hand** | SYSPRO → Shopify | Polled every 15 minutes | `INVQRY` |
-| 3 | **Cash receipts** | Shopify → credit control | Daily email at 01:00 UTC | (manual posting in SYSPRO ARSPAY UI) |
+| 3 | **Cash receipts** | Shopify → credit control | Daily email at **06:00 UK time** in summer (cron `0 5 * * *` UTC; 05:00 GMT in winter — see §12.3 for DST) | (manual posting in SYSPRO ARSPAY UI) |
 
 A fourth flow (**fulfilment back**: SYSPRO `SORQRY` → Shopify shipped status, every 30 minutes) is also live but is largely a by-product of the first three.
+
+> **What's normal:** an order can take up to **5 minutes** to appear in SYSPRO after the customer pays — the service batches submissions on a 5-minute cycle. Stock figures on the storefront refresh every **15 minutes**. If you see Shopify ahead of SYSPRO inside those windows, that's expected — don't escalate.
+>
+> **Stock-sync footnote:** SKUs not present in the SYSPRO `WEBS` warehouse are pushed as **0** to Shopify (Sarah's rule — prevents accidental sale of stock Rectella doesn't carry). See §4.2.
 
 ---
 
@@ -30,13 +34,15 @@ flowchart LR
     Shopify -->|orders/create webhook| Service
     Service -->|GraphQL: stock + fulfilment| Shopify
 
-    Service[Go middleware service<br/>Azure App Service] <--> Postgres[(Postgres<br/>staging DB)]
+    Service[Go middleware service<br/>Phase 1: NUC + Cloudflare tunnel<br/>Phase 2: Azure App Service] <--> Postgres[(Postgres<br/>staging DB)]
 
     Service -.->|HTTPS / e.net REST<br/>via site-to-site VPN| SYSPRO[SYSPRO 8<br/>RIL-APP01:31002]
 
-    SYSPRO --> Sarah[(Sarah's view:<br/>SORMASTER /<br/>InvWhControl)]
+    SYSPRO --> Sarah[(Sarah's SQL views<br/>bq_WEBS_Whs_QoH<br/>bq_WEBS_Orders_View)]
     Sarah -.->|reconciliation read| Service
 ```
+
+*Hosting note: Phase 1 runs the middleware on a hardened on-prem NUC reached through a Cloudflare named tunnel (`rectella.ctrlaltinsight.co.uk`). Phase 2 migrates the same code to Azure App Service. The data-flow shape stays identical.*
 
 **Key design choices:**
 
@@ -82,7 +88,7 @@ For each Shopify order, one `SORTOI` transaction containing:
 |--------------|---------------|-------|
 | `Customer` | (fixed) `WEBS01` | Single web-sales account |
 | `CustomerPoNumber` | `order.name` (e.g. `#BBQ1010`) | **The cross-match key** between Shopify and SYSPRO |
-| `OrderDate`, `RequestedShipDate` | `created_at` | RFC3339 |
+| `OrderDate`, `RequestedShipDate` | `created_at` | RFC3339. **Phase 2 review:** `RequestedShipDate = OrderDate` is a Phase 1 simplification; warehouse may want a lead-time offset (e.g. order date + 1 working day). Discuss with Melanie/Reece. |
 | `ShipAddress1..5`, `ShipPostalCode` | `shipping_address.*` | Truncated to SYSPRO XSD limits (40/15 chars) |
 | `StockCode` | `line_items[].sku` | Must exactly match a SYSPRO stock code |
 | `OrderQty` | `line_items[].quantity` | |
@@ -117,22 +123,22 @@ cancelled  → cancelled by Shopify (Phase 2 will propagate to SYSPRO)
 
 ```mermaid
 sequenceDiagram
-    participant T as Timer (15 min)
+    participant T as Timer 15 min
     participant Svc as Middleware
     participant DB as Postgres
     participant SP as SYSPRO
     participant S as Shopify
 
     T->>Svc: tick
-    Svc->>SP: SORTOI Logon
+    Svc->>SP: e.net Logon
     loop For each WEBS SKU
-        Svc->>SP: INVQRY (one stock code)
+        Svc->>SP: INVQRY one stock code
         SP-->>Svc: QtyAvailable
     end
-    Svc->>SP: SORTOI Logoff
-    Svc->>DB: SELECT pending+processing order qtys per SKU
-    Svc->>Svc: AvailableForShopify = QtyAvailable − pending<br/>(clamped to 0)
-    Svc->>S: GraphQL inventorySetQuantities (batch)
+    Svc->>SP: e.net Logoff
+    Svc->>DB: Read pending and processing order qtys per SKU
+    Svc->>Svc: Subtract pending qty per SKU, clamp to 0
+    Svc->>S: GraphQL inventorySetQuantities batch push
 ```
 
 ### 4.2 Behaviour rules
@@ -169,23 +175,23 @@ Both reports use **Microsoft Graph `sendMail`** via the dedicated service mailbo
 
 ```mermaid
 sequenceDiagram
-    participant T as Daily timer (05:00 UTC = 06:00 UK BST)
+    participant T as Daily timer 05:00 UTC
     participant Svc as Middleware
     participant S as Shopify Admin API
     participant G as Microsoft Graph
     participant CC as Credit control mailbox
 
     T->>Svc: tick
-    Svc->>S: REST GET /orders.json (yesterday, financial_status=paid)
+    Svc->>S: REST list yesterday paid orders
     loop For each paid order
-        Svc->>S: GraphQL transactions { fees { amount } receiptJson }
-        S-->>Svc: gross + fees (Shopify Payments via fees[]; PayPal via receipt.fee_amount)
+        Svc->>S: GraphQL fetch transaction fees and receipt
+        S-->>Svc: gross and fees per order
     end
-    Svc->>Svc: Build CSV (UTF-8 BOM, 4 cols per Sarah's spec) + anomaly check
-    Svc->>G: POST /users/shopify-service@rectella.com/sendMail (bearer token)
+    Svc->>Svc: Build 5-column CSV with UTF-8 BOM and anomaly check
+    Svc->>G: POST sendMail via shopify-service mailbox
     G-->>Svc: 202 Accepted
-    Svc->>Svc: Archive CSV to ~/backups/rectella/sent-reports/
-    Svc->>Svc: GET healthcheck-cash URL (heartbeat)
+    Svc->>Svc: Archive CSV to backups sent-reports
+    Svc->>Svc: Ping healthcheck-cash heartbeat
     Note over CC: Credit control posts manually in SYSPRO ARSPAY UI
 ```
 
@@ -219,8 +225,8 @@ The email body also summarises gross/fee/net/count in plain text so credit contr
 | `GRAPH_CLIENT_ID` | NCS (Andrew) | App registration "SysPro Shopify Graph API App" client ID. Static. |
 | `GRAPH_CLIENT_SECRET` | NCS (Andrew) | App secret. **Rotates** — see §10 secret-rotation playbook. |
 | `GRAPH_SENDER_MAILBOX` | NCS (Andrew) | `shopify-service@rectella.com`. Locked by `ApplicationAccessPolicy`. |
-| `CREDIT_CONTROL_TO` | Liz | Comma-separated recipient list. Currently: validation aliases until Liz signs off, then `creditcontrol@rectella.com`. |
-| `ORDER_INTAKE_TO` | Liz / Ops | Comma-separated. Disabled if unset. |
+| `CREDIT_CONTROL_TO` | Liz (owns recipient-list changes) | Comma-separated recipient list. **Live value: `creditcontrol@rectella.com`** — the shared credit-control mailbox. Liz is not on the distribution; she views the data from the team mailbox. |
+| `ORDER_INTAKE_TO` | Liz / Ops (own recipient-list changes) | Comma-separated. **Live value: `creditcontrol@rectella.com`** — same shared mailbox as the cash report (per Liz, 2026-04-25). Disabled if unset. |
 | `DAILY_REPORT_HOUR` / `ORDER_INTAKE_HOUR` | Operator | UTC hour 0–23. `5` = 06:00 UK BST. Bump to `6` after the Oct DST change. |
 | `HEALTHCHECKS_CASH_URL`, `HEALTHCHECKS_INTAKE_URL` | Operator | Optional Healthchecks.io ping URLs — fires ntfy if a daily send doesn't happen. |
 | `DEAD_LETTER_DIR`, `SENT_REPORT_ARCHIVE_DIR`, `REPORT_STATE_DIR` | Operator | Optional. Default to `~/backups/rectella/{missed-reports,sent-reports,state}/`. |
@@ -305,7 +311,7 @@ Detailed playbooks live in [`docs/runbook.md`](runbook.md). The summary view:
 | **Wrong webhook secret** | All webhooks 401. | Update `SHOPIFY_WEBHOOK_SECRET`; Shopify retries within 48 h. |
 | **Stock figures wrong on storefront** | Possible oversell of one or two units between cycles. | Next 15-min cycle corrects it; or trigger immediately by placing any order. |
 | **SYSPRO operator session evicted by human login** | Batch and stock-sync errors until next cycle. | Either: human logs out, or service waits ≤5 min and retries. Reece's dedicated operator account eliminates this. |
-| **Daily report didn't arrive** | Liz / ops missing the morning summary. | Healthchecks.io grace-window alert fires ntfy push at ~06:30 UK. Operator runs `cmd/send-report --type=cash --date=YYYY-MM-DD` to force-resend. If `~/backups/rectella/missed-reports/` has the CSV, attach it manually instead. |
+| **Daily report didn't arrive** | Credit control / ops missing the morning summary in the shared mailbox. | Healthchecks.io grace-window alert fires ntfy push at ~06:30 UK. Operator runs `cmd/send-report --type=cash --date=YYYY-MM-DD` to force-resend. If `~/backups/rectella/missed-reports/` has the CSV, attach it manually instead. |
 | **Daily report subject has `[⚠ ANOMALY]`** | Email arrived but the data may be wrong. | Cross-check the figures against Shopify Finances → Payouts. Common causes: Shopify API field renamed (zero fees), webhook flow broke (zero orders weekday), batch processor writeback broke (BBQ1026 fingerprint — all orders stuck in `submitted` with empty SYSPRO number). Page Ctrl Alt Insight (Tier 2). |
 | **Graph mailer auth broke (e.g. NCS rotated the secret)** | Boot log shows `Graph mailer verification failed at boot`; daily sends will dead-letter. | Get new secret from NCS, edit `<dotenv>`, restart. See §10 secret-rotation playbook. |
 
@@ -318,23 +324,35 @@ The daily-report subsystem has four independent failure-detection layers, delibe
 2. **Row-level data-sanity assertions** — before each send, the report is screened for impossible-looking shapes:
    - Cash report: non-empty txns + zero summed fees → `[⚠ ANOMALY]` banner. (This is the £0-fees-for-10-days bug fingerprint.)
    - Intake report: zero orders on a weekday → banner. All payment_amount=0 → banner. All orders in `submitted` with no SYSPRO number → banner.
-   The email still sends — Liz still has the data — but the subject line warns her not to act on it without cross-checking.
+   The email still sends — credit control still has the data — but the subject line warns the recipient not to act on it without cross-checking.
 
 3. **Healthchecks.io heartbeat** — after each successful send, the reporter pings `HEALTHCHECKS_CASH_URL` / `HEALTHCHECKS_INTAKE_URL`. If a ping doesn't arrive within Healthchecks' grace window (set to 30 min past the scheduled send), Healthchecks emails / pushes ntfy. This is the "did it fire today?" signal that the operator gets without checking the journal.
 
 4. **Disk dead-letter + ntfy push** — if `mailer.Send` returns an error (auth, network, 5xx), the CSV is written to `~/backups/rectella/missed-reports/YYYY-MM-DD-{cash|intake}.csv` and an ntfy push fires to the operator with the file path. Combined with #3, this turns a delivery failure from "silent loss" into "operator paged with the file in hand".
 
-Plus a **sent-CSV archive** (`~/backups/rectella/sent-reports/`) on every successful send — audit trail independent of the recipient's mailbox. If Liz deletes an email, finance can still reconcile against the original artifact.
+Plus a **sent-CSV archive** (`~/backups/rectella/sent-reports/`) on every successful send — audit trail independent of the recipient's mailbox. If anyone in credit control deletes an email, finance can still reconcile against the original artifact.
+
+### 8.2 Order-pipeline + stock-sync event push (lightweight observability)
+
+Two more ntfy events fire as low-priority background pushes (not pager wake-ups) so the operator can see operational issues *the moment they happen* rather than wait for the next 06:00 intake email:
+
+- **Order rejected by SYSPRO** (status → `failed`) — body names the order number, the SYSPRO reason, and the retry endpoint. Typical cause: bad SKU, missing customer, malformed address.
+- **Order dead-lettered** (status → `dead_letter` after 3 consecutive infra failures) — body names the order number, attempt count, last error, and the retry endpoint. Typical cause: VPN/SYSPRO down for the whole batch window.
+- **Orphan SKUs found in stock sync** — Shopify SKUs with no matching record in the SYSPRO `WEBS` warehouse. Body names the count and a sample of up to 5 codes. Rate-limited to one push per hour and only when the orphan set changes, so a persistent unmatched SKU doesn't pager-flood.
+
+All three reuse `NTFY_TOPIC` and are gated on it — empty topic = silent fall-back to journal-only logging (no behaviour change vs the original Phase 1 build).
+
+These events are **observability, not full hardening** — they let the operator (Sebastian during the 4-week post-handoff care window; NCS thereafter) see when something's drifting without yet committing to an automated retry/recovery path. If events fire often enough to suggest a systemic issue, the right response is targeted code hardening — not muting the events.
 
 The full per-incident triage steps (commands to run, what to look for in logs, who to escalate to) live in the runbook.
 
 ---
 
-## 9. The intake-comparison report (Sarah's offer)
+## 9. Reconciliation report (Phase 1, in progress)
 
-> *"What happens if it stops working — the report that compares order intake (Shopify) to order intake (SYSPRO). I can create a view for the SYSPRO side if that helps."*
+> **Status:** Specified. Not yet built. **Blocked on Sarah's `bq_WEBS_Orders_View` SQL Server view on RIL-DB01** (NCS to grant the service account read on the view once it exists). Estimated build effort: half a day from view-availability. Tool will ship as `cmd/intake-report/` and write CSV (optionally email).
 
-This is the daily/weekly assurance report Finance and Operations should run to **prove** the integration is whole. Sarah's offer to expose a SYSPRO-side view is exactly the right shape.
+This is the weekly (and on-demand) assurance report Finance and Operations run to **prove** the integration is whole — every paid Shopify order has a matching SYSPRO sales order, with totals reconciling to within the expected VAT delta. Originally scoped from Sarah's Phase 0 offer (*"I can create a view for the SYSPRO side if that helps"*), now a Phase 1 deliverable on the path to full sign-off.
 
 ### 9.1 What the report compares
 
@@ -372,7 +390,18 @@ Filter to `WHERE Customer = 'WEBS01' AND CustomerPoNumber LIKE '#BBQ%'`. SQL Ser
 
 ### 9.4 Implementation note
 
-A CLI tool can ship in `cmd/intake-report/` — single command that takes a date range, queries all three sources, writes a CSV (and optionally emails it). Estimated effort: half a day once Sarah's view is in place.
+A CLI tool ships in `cmd/intake-report/` — single command that takes a date range, queries all three sources, writes a CSV (and optionally emails it). Estimated effort: half a day once Sarah's view is in place.
+
+### 9.5 Operating model
+
+| Aspect | Detail |
+|---|---|
+| **Cadence** | Weekly (every Monday morning, covering the prior 7 days). Operator can also run on-demand for any disputed transaction or after an incident. |
+| **Trigger** | `go run ./cmd/intake-report --from=YYYY-MM-DD --to=YYYY-MM-DD [--email]`. Optional cron once the weekly cadence is bedded in. |
+| **Output** | CSV at `~/backups/rectella/reconciliation/YYYY-MM-DD-recon.csv` (sent-archive shape, mirrors the daily-report `sent-reports/` layout). With `--email`, also goes to `CREDIT_CONTROL_TO` / `ORDER_INTAKE_TO`. |
+| **Anomaly threshold** | Any `MISSING IN SYSPRO` or `MISSING IN SHOPIFY` row, OR a row where Shopify-net vs SYSPRO total differs by more than £1.00 after VAT strip → ntfy push to operator (mirrors the daily-report dead-letter pattern). Sub-£1 differences are logged but not paged. |
+| **Failure mode** | If the SYSPRO view is unreachable (VPN / RIL-DB01 down), the tool writes a partial CSV with the SYSPRO column blank and a header banner — never silently zero. |
+| **Owner of action** | Liz (Finance) reviews and signs off the weekly run during Phase 1 stabilisation. Sarah triages SYSPRO-side mismatches; Sebastian triages middleware/Shopify-side mismatches. |
 
 ---
 
@@ -380,7 +409,7 @@ A CLI tool can ship in `cmd/intake-report/` — single command that takes a date
 
 | Item | Where to find it |
 |------|------------------|
-| Day-to-day operator runbook | [`docs/runbook.md`](runbook.md) |
+| Day-to-day operator runbook | [`docs/runbook.md`](runbook.md) — *note: incident commands in the runbook are written for the Phase 2 Azure deployment (`az webapp …`); during Phase 1 on the NUC, the equivalents are `systemctl --user restart rectella` to restart, `journalctl --user -u rectella -f` to tail logs, and `~/backups/rectella/` for pg_dumps. A Phase 1 refresh of the runbook is queued.* |
 | Architecture diagrams (interactive) | [`docs/architecture-playground.html`](architecture-playground.html) |
 | Architecture diagrams (durable ASCII) | [`docs/architecture-diagrams.md`](architecture-diagrams.md) |
 | Network setup (VPN, firewalls, hosts) | [`docs/network-setup.md`](network-setup.md) |
@@ -395,7 +424,8 @@ A CLI tool can ship in `cmd/intake-report/` — single command that takes a date
 | SYSPRO admin (Rectella) | Melanie Higgins | higginsm@rectella.com |
 | SYSPRO admin (Rectella) | Reece Taylor | taylorr@rectella.com |
 | Finance Director (Rectella) | Liz Buckley | buckleyl@rectella.com |
-| Managed IT | NCS (Andrew Charlesworth) | helpdesk@ncs.cloud |
+| Managed IT — Entra / M365 / Graph app | NCS (Andrew Charlesworth) | helpdesk@ncs.cloud |
+| Managed IT — VPN / network / infra | NCS (Ross Tomlinson) | helpdesk@ncs.cloud |
 
 ### 10.1 Tier 1 (NCS / Rectella ops) vs Tier 2 (Ctrl Alt Insight) split
 
@@ -405,7 +435,7 @@ Realistic post-handoff support model. Rectella has no in-house developers, so a 
 
 - Restart the service (`systemctl --user restart rectella`)
 - Rotate the Microsoft Graph client secret in `<dotenv>` when it expires (see §10.2)
-- Respond to ntfy push notifications on Sebastian's iOS device (or Rectella's chosen pager) for dead-letter alerts
+- Respond to ntfy push notifications for dead-letter alerts (topic configured in `NTFY_TOPIC` env var; subscribed device(s) at NCS / Rectella's choice — see runbook for ntfy-app setup. The current topic also fans out to Sebastian's phone during the warranty period.)
 - Force-resend a missed daily report via `cmd/send-report --type=cash --date=YYYY-MM-DD`
 - Restore Postgres from `~/backups/rectella/` if the NUC dies
 - Manage the VPN tunnel and Cloudflare tunnel
@@ -450,7 +480,8 @@ The Graph client secret in `<dotenv>` (`GRAPH_CLIENT_SECRET`) expires periodical
 - Fulfilment back (SYSPRO → Shopify dispatch status)
 - Reconciliation sweeper (catches missed webhooks)
 - Cancellation classification (categorises cancelled Shopify orders into 6 dispositions; **does not** propagate to SYSPRO)
-- Daily cash-receipt CSV email (configurable; bridges the gap until ARSPAY is automated)
+- Daily cash-receipt CSV email at 06:00 UK to the credit-control mailbox (bridges the gap until the SYSPRO AR transaction business object is licensed — see §5.6)
+- Daily order-intake summary email at 06:00 UK to ops/finance (HTML breakdown + per-order CSV; flags zero-order weekdays and stuck-order anomalies)
 - Operator runbook
 - Live monitoring (external uptime check + push notification)
 
@@ -468,13 +499,13 @@ The Graph client secret in `<dotenv>` (`GRAPH_CLIENT_SECRET`) expires periodical
 - Gift card support
 - Refund handling
 - GDPR retention policy (90-day NULL of `raw_payload`)
-- Intake-reconciliation report (per §9)
+- ARSPAY automation (cash-receipt posting — pending SYSPRO licence upgrade, see §5.6)
 
 ---
 
 ## 12. Healthchecks.io inventory
 
-The service uses [healthchecks.io](https://healthchecks.io) as the single source of truth for "did this scheduled thing run today?". Five checks total post-handoff, all wired to the same iOS ntfy integration so any failure pages the operator the same way.
+The service uses [healthchecks.io](https://healthchecks.io) as the single source of truth for "did this scheduled thing run today?". Five checks total post-handoff, all wired to the same ntfy integration so any failure pages the operator the same way.
 
 | # | Check name | Purpose | Cadence | Grace | Pinged by |
 |---|------------|---------|---------|-------|-----------|
@@ -513,20 +544,10 @@ Both new checks share the same shape:
 
 ---
 
-## 13. Sign-off checklist
+## 13. Phase 1 outstanding
 
-For Rectella to consider Phase 1 complete, confirm:
-
-- [ ] Operator runbook reviewed and approved by Melanie / Reece
-- [ ] Three integrations (order, stock, fulfilment) running on production infrastructure
-- [ ] Reconciliation sweeper enabled (`RECONCILIATION_INTERVAL=15m`)
-- [ ] Daily cash-receipt email (Graph API) reaching credit control + Liz CC'd
-- [ ] Daily order-intake email (Graph API) reaching ops/finance
-- [ ] All 5 healthchecks.io checks (§12) live + wired to ntfy
-- [ ] Encrypted backup of `<dotenv>` stored in NCS's password manager
-- [ ] Intake-comparison report agreed and Sarah's view in place
-- [ ] Escalation contacts circulated to Rectella ops
+The integration is live and stable. The only remaining Phase 1 deliverable is the **reconciliation report** (§9) — a weekly cross-match between Shopify, the middleware DB, and SYSPRO that closes the audit loop. It is currently blocked on Sarah's `bq_WEBS_Orders_View` SQL Server view on RIL-DB01; once that view exists the CLI tool (`cmd/intake-report/`) is ~half a day's work, followed by Liz/Sarah's first weekly review.
 
 ---
 
-*This document covers the state of the integration as of 2026-04-17. For amendments, contact Sebastian.*
+*This document covers the state of the integration as of 2026-04-26 (post pre-handoff hardening, PR #16). For amendments, contact Sebastian.*

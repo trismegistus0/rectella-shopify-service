@@ -39,11 +39,23 @@ type shopifyAddress struct {
 }
 
 type shopifyLineItem struct {
-	SKU           string       `json:"sku"`
-	Quantity      int          `json:"quantity"`
-	Price         string       `json:"price"`
-	TotalDiscount string       `json:"total_discount"`
-	TaxLines      []shopifyTax `json:"tax_lines"`
+	SKU                 string                      `json:"sku"`
+	Quantity            int                         `json:"quantity"`
+	Price               string                      `json:"price"`
+	TotalDiscount       string                      `json:"total_discount"`
+	TaxLines            []shopifyTax                `json:"tax_lines"`
+	DiscountAllocations []shopifyDiscountAllocation `json:"discount_allocations"`
+}
+
+// shopifyDiscountAllocation captures order-level discount codes
+// (e.g. customer typing "BBQ40") that Shopify allocates across line
+// items. Shopify writes total_discount=0 for these and puts the
+// per-line cut in discount_allocations[].amount. The line-level
+// total_discount field on its own only catches direct line discounts
+// (rare); any percentage / fixed-amount discount code applied at
+// checkout flows through here instead.
+type shopifyDiscountAllocation struct {
+	Amount string `json:"amount"`
 }
 
 type shopifyTax struct {

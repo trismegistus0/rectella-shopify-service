@@ -234,6 +234,37 @@ func TestBuildSORTOI_DataXML_NoFreightWhenZero(t *testing.T) {
 // subtract the per-line tax from the unit price before emitting <Price>.
 // Shopify sends £8.00 gross with £1.33 VAT baked in; SYSPRO's exclusive
 // tax code will add VAT back on top of the net figure we send.
+// TestBuildSORTOI_DataXML_BBQ1025_DiscountAndVAT is the end-to-end
+// regression guard for the over-billing incident (2026-04-27).
+// Real-customer scenario: BBQ1025 paid £44.10 after a 10% bbq40 code
+// on a £49.00 line, with £7.35 VAT (taxes_included). Pre-fix the
+// service produced <Price>41.65</Price> (49.00 - 7.35) and SYSPRO
+// invoiced 41.65 * 1.20 = £49.98, over-charging the customer by
+// £5.88. After the fix Discount=4.90 flows through from the webhook
+// handler's discount_allocations parsing, and the SORTOI XML must
+// have <Price>36.75</Price> so SYSPRO bills 36.75 * 1.20 = £44.10
+// matching what the customer actually paid.
+func TestBuildSORTOI_DataXML_BBQ1025_DiscountAndVAT(t *testing.T) {
+	order := minimalOrder()
+	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.20}]}]}`)
+	lines := []model.OrderLine{
+		{SKU: "IBBQ2093", Quantity: 1, UnitPrice: 49.00, Tax: 7.35, Discount: 4.90},
+	}
+
+	_, dataXML, err := buildSORTOI(order, lines, "WEBS", "A", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(dataXML, "<Price>36.75</Price>") {
+		t.Errorf("expected <Price>36.75</Price> (49.00 - 4.90 discount - 7.35 VAT); got: %s", dataXML)
+	}
+	for _, absent := range []string{"<Price>49.00</Price>", "<Price>41.65</Price>", "<Price>44.10</Price>"} {
+		if strings.Contains(dataXML, absent) {
+			t.Errorf("data XML must NOT contain pre-fix or intermediate price %q\ngot: %s", absent, dataXML)
+		}
+	}
+}
+
 func TestBuildSORTOI_DataXML_StripsVATAndSetsTaxCode(t *testing.T) {
 	order := minimalOrder()
 	order.RawPayload = []byte(`{"taxes_included":true,"line_items":[{"tax_lines":[{"rate":0.05}]}]}`)

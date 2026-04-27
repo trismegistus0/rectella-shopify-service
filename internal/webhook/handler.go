@@ -268,8 +268,23 @@ func mapOrder(p shopifyOrder, rawPayload []byte) (model.Order, []model.OrderLine
 		if v, err := strconv.ParseFloat(li.Price, 64); err == nil {
 			line.UnitPrice = v
 		}
+		// Two discount channels exist in Shopify webhooks and either,
+		// neither, or both can be non-zero on a given line:
+		//   - total_discount: direct line-level discounts (rare,
+		//     manual line edits in Shopify admin)
+		//   - discount_allocations[]: per-line allocations of
+		//     order-level discount codes (e.g. customer typing
+		//     "BBQ40" at checkout). For these, total_discount is 0.
+		// Both must be summed before VAT-stripping; otherwise SYSPRO
+		// is invoiced at the pre-discount price and over-charges the
+		// customer.
 		if v, err := strconv.ParseFloat(li.TotalDiscount, 64); err == nil {
 			line.Discount = v
+		}
+		for _, da := range li.DiscountAllocations {
+			if v, err := strconv.ParseFloat(da.Amount, 64); err == nil {
+				line.Discount += v
+			}
 		}
 		// Sum tax from all tax lines.
 		for _, t := range li.TaxLines {

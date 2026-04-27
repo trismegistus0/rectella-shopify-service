@@ -3,6 +3,7 @@ package batch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -23,10 +24,11 @@ type Store interface {
 
 // Processor polls for pending orders and submits them to SYSPRO.
 type Processor struct {
-	store    Store
-	client   syspro.Client
-	interval time.Duration
-	logger   *slog.Logger
+	store     Store
+	client    syspro.Client
+	interval  time.Duration
+	logger    *slog.Logger
+	ntfyTopic string // optional — set via SetNtfyTopic for failure event push
 
 	mu sync.Mutex
 }
@@ -39,6 +41,12 @@ func New(store Store, client syspro.Client, interval time.Duration, logger *slog
 		interval: interval,
 		logger:   logger,
 	}
+}
+
+// SetNtfyTopic enables fire-and-forget ntfy events on `failed` and
+// `dead_letter` transitions. Empty topic = no events (default).
+func (p *Processor) SetNtfyTopic(topic string) {
+	p.ntfyTopic = topic
 }
 
 // Run starts the polling loop. It blocks until ctx is cancelled.
@@ -170,6 +178,13 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 			"error", err,
 		)
 
+		if status == model.OrderStatusDeadLetter {
+			pingNtfyEvent(p.ntfyTopic,
+				"Rectella order dead-lettered",
+				fmt.Sprintf("Order %s dead-lettered after %d infra failures.\nLast error: %s\n\nRetry once the underlying issue is fixed:\n  POST /orders/%d/retry",
+					order.OrderNumber, newAttempts, err.Error(), order.ID))
+		}
+
 		return errInfra
 	}
 
@@ -189,6 +204,11 @@ func (p *Processor) submitOrder(ctx context.Context, session syspro.Session, ow 
 			"order_number", order.OrderNumber,
 			"error", result.ErrorMessage,
 		)
+
+		pingNtfyEvent(p.ntfyTopic,
+			"Rectella order rejected by SYSPRO",
+			fmt.Sprintf("Order %s rejected by SYSPRO (likely a data issue — bad SKU, missing customer, etc.)\nReason: %s\n\nFix the underlying data and retry:\n  POST /orders/%d/retry",
+				order.OrderNumber, result.ErrorMessage, order.ID))
 
 		return nil
 	}
